@@ -1,8 +1,27 @@
 {
   "functions": {
-    "api/canva/*.ts": { "maxDuration": 60 }
+    "api/canva/*.ts": {
+      "maxDuration": 60
+    },
+    "api/share/*.ts": {
+      "maxDuration": 30
+    }
   },
   "headers": [
-    { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/s/:id",
+      "destination": "/api/share/page?id=:id"
+    }
   ]
 }

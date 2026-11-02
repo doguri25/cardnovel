@@ -7,6 +7,8 @@ export type CardKind = 'cover' | 'body' | 'outro';
 export type OutroKind = 'question' | 'teaser' | 'note' | 'afterglow' | 'none';
 export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
 export type ImgPos = 'top' | 'center' | 'bottom';
+/** stack: picture on top, words below · full: the picture fills the card, words over it · quote: one line of dialogue, large */
+export type CardLayout = 'stack' | 'full' | 'quote';
 export type InputMode = 'auto' | 'long' | 'idea' | 'split';
 export type TextProvider = 'anthropic' | 'google' | 'openai';
 export type ImageProvider = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
@@ -31,7 +33,10 @@ export interface Card {
   imgPos?: ImgPos;
   /** the Canva design this card's picture was made in, to export it again */
   canvaDesignId?: string;
+  layout?: CardLayout;
 }
+
+export const LAYOUT_NAME: Record<CardLayout, string> = { stack: '기본', full: '전면 그림', quote: '대사' };
 
 export interface ArtStyle {
   preset: string;
@@ -41,6 +46,22 @@ export interface ArtStyle {
   prompt: string;
   /** English one-liners describing the main characters, so they look the same on every card */
   characters: string;
+  /** character reference picture (data URL) sent with every picture request, so faces and clothes stay the same */
+  refImage?: string;
+}
+
+export type ReviewAxis = 'hook' | 'flow' | 'consistency' | 'turn' | 'ending';
+export const REVIEW_AXES: Record<ReviewAxis, string> = { hook: '첫 장 흡입력', flow: '몰입·리듬', consistency: '개연성', turn: '반전·전환', ending: '결말 여운' };
+export interface ReviewNote { index: number; verdict: 'good' | 'fix' | 'cut'; issue: string; suggestion: string }
+export interface Review {
+  at: number;
+  /** card texts the review was written for, to tell when it no longer matches */
+  sig: string;
+  scores: Record<ReviewAxis, number>;
+  summary: string;
+  strengths: string[];
+  notes: ReviewNote[];
+  titles: { title: string; hook: string; why: string }[];
 }
 
 export interface Work {
@@ -63,6 +84,11 @@ export interface Work {
   textAI: { provider: TextProvider; model: string };
   imageAI: { provider: ImageProvider; model: string };
   thumb?: string;
+  /** episode number inside the series (1, 2, …); empty for a one-off story */
+  episode?: number;
+  /** a few sentences on what happens, written by the text AI, given to the next episode */
+  summary?: string;
+  review?: Review;
 }
 
 export const OUTRO_KINDS: Record<OutroKind, { name: string; ask: string }> = {
@@ -185,4 +211,12 @@ export function normalizeWork(w: Omit<Partial<Work>, 'cards'> & { cards?: Partia
 }
 
 export const workTitle = (w: Work): string => (w.cards[0]?.title || '').trim() || '제목 없음';
+/** "3분 미스터리 · 2화" — the series line on the cover and the last card */
+export const seriesLine = (w: Pick<Work, 'series' | 'episode'>): string => [w.series, w.episode ? `${w.episode}화` : ''].filter(Boolean).join(' · ');
+/** a short fingerprint of the cards' words, to see whether a review still matches them */
+export const textSig = (w: Work): string => {
+  let h = 2166136261;
+  for (const ch of w.cards.map((c) => `${c.title}|${c.text}`).join('\n')) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+};
 export const countChars = (s: string): number => (s || '').replace(/\s/g, '').length;

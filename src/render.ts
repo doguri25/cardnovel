@@ -1,13 +1,23 @@
 // Canvas card renderer, ported from the 카드소설 제작소 artifact.
 // Picture on top, words below; without a picture the words sit in the middle.
 import type { Card, Work } from './model';
-import { TOTAL_CARDS } from './model';
+import { seriesLine, TOTAL_CARDS } from './model';
 import { fontFor, ratioOf, themeOf, weightFor, type Theme } from './themes';
 
 export const W = 1080;
 export const PAD = 100;
 
 export const cardHeight = (work: Pick<Work, 'ratio'>): number => ratioOf(work.ratio).h;
+
+/** Effective layout: the cover can be full-bleed but not a quote card, the last card always stacks. */
+export const layoutOf = (card: Card): NonNullable<Card['layout']> =>
+  card.kind === 'outro' ? 'stack' : card.kind === 'cover' && card.layout === 'quote' ? 'stack' : card.layout || 'stack';
+
+/** Height of a card's picture area: the whole card for full-bleed and quote cards, the top band otherwise. */
+export const artHeight = (work: Pick<Work, 'ratio'>, card: Card): number => {
+  if (card.kind === 'outro') return Math.round(cardHeight(work) * 0.42);
+  return layoutOf(card) === 'stack' ? ratioOf(work.ratio).art : cardHeight(work);
+};
 
 export function hexA(hex: string, a: number): string {
   const n = parseInt(hex.slice(1), 16);
@@ -153,6 +163,15 @@ function drawIllustration(ctx: CanvasRenderingContext2D, img: HTMLImageElement, 
   ctx.drawImage(offImg, 0, 0, W, imgH, 0, 0, W, imgH);
 }
 
+/** The picture over the whole card (full-bleed and quote cards), cropped to fill. */
+function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, H: number, pos: Card['imgPos']) {
+  const iw = img.naturalWidth || W, ih = img.naturalHeight || H;
+  const s = Math.max(W / iw, H / ih);
+  const dw = iw * s, dh = ih * s;
+  const dy = pos === 'top' ? 0 : pos === 'bottom' ? H - dh : (H - dh) / 2;
+  ctx.drawImage(img, (W - dw) / 2, dy, dw, dh);
+}
+
 /* ---------- pictures ---------- */
 export function srcOf(card: Card): string | null {
   if (card.img) return card.img;
@@ -244,14 +263,20 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
     renderOutro(ctx, work, card, img, { H, theme, fam, bold, ts, maxW, setSpacing, index });
   } else {
     const isCover = card.kind === 'cover';
-    const eyebrow = card.showLabel ? (isCover ? work.series || '' : card.label || '') : '';
+    const eyebrow = card.showLabel ? (isCover ? seriesLine(work) : card.label || '') : '';
     const title = isCover ? card.title || '제목 없음' : (card.title || '').trim();
     const body = card.text || '';
     const strong = card.accent || isCover;
     // an accented body card without an eyebrow still gets the short accent bar above its text
     const markOnly = !eyebrow && card.accent && !isCover;
+    const layout = layoutOf(card);
+    const t: TextParts = { eyebrow, title, body, strong, markOnly, isCover, accent: card.accent };
 
-    if (img) {
+    if (layout === 'full' && img) {
+      renderFull(ctx, work, card, img, t, { H, theme, fam, bold, ts, maxW, setSpacing, index });
+    } else if (layout === 'quote') {
+      renderQuote(ctx, card, img, t, { H, theme, fam, bold, ts, maxW, setSpacing, index });
+    } else if (img) {
       let tSize = Math.round((isCover ? 92 : 52) * ts), bSize = Math.round((isCover ? 38 : 42) * ts);
       const bLH = () => bSize * (isCover ? 1.6 : 1.68), tLH = () => tSize * 1.25;
       const measure = () => {
@@ -342,12 +367,123 @@ interface Ctx {
   H: number; theme: Theme; fam: string; bold: number; ts: number; maxW: number; index: number;
   setSpacing: (px: number) => void;
 }
+interface TextParts { eyebrow: string; title: string; body: string; strong: boolean; markOnly: boolean; isCover: boolean; accent: boolean }
+
+/** Full-bleed: the picture fills the card and the words sit over a shade at the bottom. */
+function renderFull(ctx: CanvasRenderingContext2D, work: Work, card: Card, img: HTMLImageElement, t: TextParts, c: Ctx) {
+  const { H, theme, fam, bold, ts, maxW, setSpacing } = c;
+  drawCover(ctx, img, H, card.imgPos);
+  // a light wash in the theme colour keeps pictures from different sources looking like one set
+  ctx.save(); ctx.globalAlpha = theme.light ? 0.08 : 0.16; ctx.fillStyle = theme.bg[0]; ctx.fillRect(0, 0, W, H); ctx.restore();
+
+  let tSize = Math.round((t.isCover ? 100 : 54) * ts), bSize = Math.round((t.isCover ? 40 : 44) * ts);
+  const tLH = () => tSize * 1.25, bLH = () => bSize * 1.66;
+  const measure = () => {
+    ctx.font = `${bold} ${tSize}px ${fam}`; const tl = t.title ? wrap(ctx, t.title, maxW) : [];
+    ctx.font = `400 ${bSize}px ${fam}`; const bl = t.body ? wrap(ctx, t.body, maxW) : [];
+    return { tl, bl, h: (t.eyebrow ? 64 : t.markOnly ? 34 : 0) + tl.length * tLH() + (tl.length && bl.length ? 22 : 0) + bl.length * bLH() };
+  };
+  let r = measure();
+  while (r.h > H * 0.5 && bSize > 28) { bSize -= 2; tSize = Math.max(t.isCover ? 60 : 40, tSize - 2); r = measure(); }
+  const textBottom = H - 150;
+  const textTop = textBottom - r.h;
+
+  // shade from a little above the words down to the bottom edge
+  const shadeTop = Math.max(0, textTop - Math.round(H * 0.22));
+  const g = ctx.createLinearGradient(0, shadeTop, 0, H);
+  const base = theme.light ? theme.bg[0] : theme.bg[1];
+  g.addColorStop(0, hexA(base, 0)); g.addColorStop(0.45, hexA(base, theme.light ? 0.78 : 0.72)); g.addColorStop(1, hexA(base, 0.94));
+  ctx.fillStyle = g; ctx.fillRect(0, shadeTop, W, H - shadeTop);
+  const gt = ctx.createLinearGradient(0, 0, 0, 160);
+  gt.addColorStop(0, hexA(base, 0.35)); gt.addColorStop(1, hexA(base, 0));
+  ctx.fillStyle = gt; ctx.fillRect(0, 0, W, 160);
+  drawGrain(ctx, theme, H);
+  drawFrame(ctx, theme, H, textTop);
+
+  let y = textTop;
+  if (!theme.light) { ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 14; }
+  if (t.eyebrow) {
+    ctx.font = `500 30px ${fam}`; setSpacing(5); ctx.fillStyle = theme.accent;
+    ctx.fillText(t.eyebrow, PAD, y + 30); setSpacing(0);
+    if (t.strong) ctx.fillRect(PAD, y + 46, 56, 4);
+    y += 64;
+  } else if (t.markOnly) {
+    ctx.fillStyle = theme.accent; ctx.fillRect(PAD, y + 4, 56, 4);
+    y += 34;
+  }
+  if (r.tl.length) {
+    ctx.fillStyle = t.accent && !t.isCover ? theme.accent : theme.text; ctx.font = `${bold} ${tSize}px ${fam}`;
+    if (work.theme === 'neon' && t.isCover) { ctx.shadowColor = theme.accent; ctx.shadowBlur = 24; }
+    y += tSize * 0.82;
+    for (const l of r.tl) { ctx.fillText(l, PAD, y); y += tLH(); }
+    if (!theme.light) { ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 14; } else ctx.shadowBlur = 0;
+    y += (r.bl.length ? 22 : 0) - tSize * 0.82 + tLH() * 0.02;
+  }
+  if (r.bl.length) {
+    ctx.fillStyle = t.isCover ? hexA(theme.text, 0.86) : theme.text; ctx.font = `400 ${bSize}px ${fam}`;
+    y += bSize * 0.82;
+    for (const l of r.bl) { ctx.fillText(l, PAD, y); y += bLH(); }
+  }
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+}
+
+/** Quote card: one line of dialogue set large in the middle, the picture (if any) faint behind it. */
+function renderQuote(ctx: CanvasRenderingContext2D, card: Card, img: HTMLImageElement | null, t: TextParts, c: Ctx) {
+  const { H, theme, fam, bold, ts, setSpacing } = c;
+  if (img) {
+    drawCover(ctx, img, H, card.imgPos);
+    const g = ctx.createLinearGradient(0, 0, W * 0.4, H);
+    g.addColorStop(0, hexA(theme.bg[0], theme.light ? 0.84 : 0.8)); g.addColorStop(1, hexA(theme.bg[1], theme.light ? 0.9 : 0.88));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  drawGrain(ctx, theme, H);
+  drawFrame(ctx, theme, H, 200);
+  if (t.eyebrow) {
+    ctx.font = `500 30px ${fam}`; setSpacing(5); ctx.fillStyle = theme.accent; ctx.fillText(t.eyebrow, PAD, 150); setSpacing(0);
+    if (t.strong) ctx.fillRect(PAD, 172, 56, 4);
+  } else if (t.markOnly) {
+    ctx.fillStyle = theme.accent; ctx.fillRect(PAD, 172, 56, 4);
+  }
+
+  // the words without the quotation marks the writer may have typed; the card draws its own
+  const line = t.body.trim().replace(/^["“”'‘’「『]+|["“”'‘’」』]+$/g, '').trim();
+  const speaker = t.title.trim();
+  const qW = W - PAD * 2 - 40;
+  let qSize = Math.round(60 * ts);
+  const qLH = () => qSize * 1.55;
+  ctx.textAlign = 'center';
+  const measure = () => { ctx.font = `${bold} ${qSize}px ${fam}`; return line ? wrap(ctx, line, qW) : []; };
+  let ql = measure();
+  const sH = speaker ? 34 * ts * 1.6 + 30 : 0;
+  const avail = H - 420;
+  while (ql.length * qLH() + sH > avail && qSize > 34) { qSize -= 2; ql = measure(); }
+  const blockH = ql.length * qLH() + sH;
+  let y = 240 + Math.max(0, (avail - blockH) / 2);
+
+  // a large opening mark above the words
+  ctx.save();
+  ctx.fillStyle = hexA(theme.accent, 0.55); ctx.font = `700 ${Math.round(200 * ts)}px "Gowun Batang", "Noto Serif KR", serif`;
+  ctx.fillText('“', W / 2, y + Math.round(40 * ts));
+  ctx.restore();
+  y += Math.round(60 * ts);
+
+  ctx.fillStyle = t.accent ? theme.accent : theme.text; ctx.font = `${bold} ${qSize}px ${fam}`;
+  y += qSize * 0.85;
+  for (const l of ql) { ctx.fillText(l, W / 2, y); y += qLH(); }
+  y -= qSize * 0.85;
+  if (speaker) {
+    ctx.fillStyle = hexA(theme.text, 0.7); ctx.font = `500 ${Math.round(34 * ts)}px ${fam}`; setSpacing(2);
+    y += 30 + 34 * ts;
+    ctx.fillText(`— ${speaker}`, W / 2, y); setSpacing(0);
+  }
+  ctx.textAlign = 'left';
+}
 
 /** The 20th card: the add-on line the writer picked (question, teaser, …) above the fixed follow line and handle. */
 function renderOutro(ctx: CanvasRenderingContext2D, work: Work, card: Card, img: HTMLImageElement | null, c: Ctx) {
   const { H, theme, fam, bold, ts, maxW, setSpacing } = c;
   const addon = work.outroKind === 'none' ? '' : (card.text || '').trim();
-  const eyebrow = card.showLabel ? work.series || '' : '';
+  const eyebrow = card.showLabel ? seriesLine(work) : '';
   let top = 220;
   const bottom = H - 170;
 

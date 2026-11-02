@@ -1,6 +1,7 @@
 // Prompts and the JSON shape the text AI answers in.
 import { BODY_COUNT, OUTRO_KINDS, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { SVG_EXAMPLE } from './svg-example';
+import { layoutOf } from '../render';
 
 const str = { type: 'string' } as const;
 
@@ -8,7 +9,7 @@ const str = { type: 'string' } as const;
 export const COMPOSE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['title', 'hook', 'cards', 'outro', 'caption', 'hashtags', 'style', 'coverScene'],
+  required: ['title', 'hook', 'cards', 'outro', 'caption', 'hashtags', 'style', 'coverScene', 'summary'],
   properties: {
     title: str,
     hook: str,
@@ -31,6 +32,7 @@ export const COMPOSE_SCHEMA = {
       properties: { name: str, description: str, prompt: str, characters: str },
     },
     coverScene: str,
+    summary: str,
   },
 };
 
@@ -51,7 +53,21 @@ const MODE_RULES: Record<Exclude<InputMode, 'auto'>, string> = {
 - 나머지 항목(제목·훅이 비어 있으면 제안, label, scene, accent, 덧붙임, 캡션, 해시태그, 그림체)만 채웁니다.`,
 };
 
-export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; fixed?: { title: string; hook: string; body: { label: string; text: string }[] } }): string {
+/** An earlier episode of the same series, given to the writer so the next one continues it. */
+export interface PrevEpisode { episode: number; title: string; summary: string }
+
+export function seriesBlock(series: string, episode: number | undefined, previous: PrevEpisode[] | undefined): string {
+  if (!episode || !previous?.length) return '';
+  return `
+연재: 「${series || '시리즈'}」 ${episode}화입니다. 아래 앞 회 줄거리를 이어받습니다.
+- 인물 이름·성격·관계, 배경, 이미 밝혀진 사실을 그대로 지킵니다. 앞 회 내용을 되풀이하지 않습니다.
+- 앞 회를 안 본 독자도 따라올 수 있게 첫 1~2장에서 필요한 것만 짧게 상기시킵니다.
+[앞 회 줄거리]
+${previous.map((p) => `${p.episode}화 「${p.title}」: ${p.summary}`).join('\n')}
+`;
+}
+
+export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; fixed?: { title: string; hook: string; body: { label: string; text: string }[] }; series?: string; episode?: number; previous?: PrevEpisode[] }): string {
   const { mode, story, outroKind, fixed } = opts;
   const outro = outroKind === 'none' ? '빈 문자열("")' : `${OUTRO_KINDS[outroKind].ask} (60자 이내)`;
   const fixedBlock = fixed
@@ -81,7 +97,8 @@ ${MODE_RULES[mode]}
 - coverScene: 표지 그림 장면(영어 한두 문장, 이야기의 무대와 핵심 사물).
 - caption: 인스타그램 게시글 본문 2~3문장(한국어, 결말을 밝히지 않음).
 - hashtags: 6~8개, #을 붙인 한국어.
-${fixedBlock}
+- summary: 이 회의 줄거리를 결말까지 3~4문장(한국어). 다음 회를 쓸 때 앞 회 줄거리로 씁니다. 주요 인물 이름을 넣습니다.
+${seriesBlock(opts.series ?? '', opts.episode, opts.previous)}${fixedBlock}
 [입력]
 ${story}`;
 }
@@ -113,6 +130,15 @@ ${cardsAsText(w)}
 JSON으로 {"text": "새 본문"}만 돌려주세요.`;
 }
 
+export function summaryPrompt(w: Work): string {
+  return `카드소설의 줄거리를 결말까지 3~4문장으로 요약합니다(한국어). 주요 인물 이름과 밝혀진 사실을 넣습니다. 다음 회를 쓸 때 앞 회 줄거리로 씁니다.
+
+[이야기]
+${cardsAsText(w)}
+
+JSON으로 {"text": "요약"}만 돌려주세요.`;
+}
+
 export function outroPrompt(w: Work, kind: OutroKind): string {
   return `카드소설 마지막 장에 넣을 ${OUTRO_KINDS[kind].name} 한 줄을 씁니다: ${OUTRO_KINDS[kind].ask}. 60자 이내, 이모지 없이.
 
@@ -123,20 +149,45 @@ JSON으로 {"text": "한 줄"}만 돌려주세요.`;
 }
 
 /* ================= pictures ================= */
-export function imagePrompt(w: Work, index: number, withRef: boolean): string {
+const COMPOSITION = {
+  stack: 'Composition: wide horizontal frame, main subject from the center to the right, keep the bottom quarter darker and simple because text continues below the picture.',
+  full: 'Composition: full-bleed frame filling the whole card, main subject in the upper two thirds, keep the bottom third darker, calm and low in detail because text is laid over it.',
+  quote: 'Composition: an atmospheric, low-detail backdrop with soft focus and no strong focal point; it will sit faintly behind a large line of dialogue.',
+} as const;
+
+export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cover?: boolean } = {}): string {
   const c = w.cards[index];
   const s = w.style;
   const scene = c.kind === 'cover'
     ? `Cover illustration for the story "${c.title}". ${c.scene || c.text}`
     : c.scene || `A scene for this part of a Korean short story: ${c.text}`;
+  const refLine = refs.chars && refs.cover
+    ? 'Reference images: the first is the character sheet (keep every character\'s face, hair, build and clothes identical to it); the second is the cover (match its art style, palette and lighting).'
+    : refs.chars
+      ? 'Reference image: the character sheet. Keep every character\'s face, hair, build and clothes identical to it, and use its art style.'
+      : refs.cover
+        ? 'Match the art style, palette and character designs of the reference image exactly.'
+        : '';
   return [
     s.prompt,
     s.characters ? `Characters (keep them identical on every card): ${s.characters}` : '',
     `Scene: ${scene}`,
-    withRef ? 'Match the art style, palette and character designs of the reference image exactly.' : '',
-    'Composition: wide horizontal frame, main subject from the center to the right, keep the bottom quarter darker and simple because text continues below the picture.',
+    refLine,
+    COMPOSITION[layoutOf(c)],
     'No text, letters, numbers, captions, speech bubbles, logos or watermarks anywhere in the image.',
   ].filter(Boolean).join('\n');
+}
+
+/** A turnaround-style sheet of the main characters in the work's art style. */
+export function characterSheetPrompt(w: Work): string {
+  const s = w.style;
+  return [
+    s.prompt,
+    `Character reference sheet for an illustrated Korean short story${w.cards[0]?.title ? ` titled "${w.cards[0].title}"` : ''}.`,
+    s.characters ? `Characters: ${s.characters}` : 'Characters: the main characters of the story, each with a clear, distinctive look.',
+    'Show each main character standing side by side, full body, front view, neutral pose and expression, evenly lit, on a plain light background. Same scale for everyone, generous space between them.',
+    'No text, names, labels, letters, numbers, logos or watermarks.',
+  ].join('\n');
 }
 
 const NIGHT_GUIDE = `화풍 가이드:

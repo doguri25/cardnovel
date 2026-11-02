@@ -93,6 +93,19 @@
           <div class="desc" id="styleDesc"></div>
         </div>
         <select class="input" id="stylePreset" aria-label="그림체 바꾸기" style="width:auto"></select>
+        <div class="refbox">
+          <div class="refpic empty" id="refPic">없음</div>
+          <div class="refinfo">
+            <div class="name small">인물 기준 그림</div>
+            <div class="desc" id="refNote"></div>
+            <div class="picbtns">
+              <button class="btn tiny tonal" id="btnRefAI" type="button">AI로 만들기</button>
+              <button class="btn tiny" id="btnRefUpload" type="button">올리기</button>
+              <button class="btn tiny" id="btnRefCover" type="button">표지 그림 쓰기</button>
+              <button class="btn tiny" id="btnRefClear" type="button" hidden>지움</button>
+            </div>
+          </div>
+        </div>
         <details>
           <summary>그림체 자세히 고치기</summary>
           <div class="stack">
@@ -115,6 +128,16 @@
         <span class="status" id="artStatus"></span>
       </div>
       <div class="cards" id="cardList"></div>
+    </div>
+
+    <div class="panel" id="reviewPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅲ</span>AI 평가</h2>
+        <p class="hint">흡입력 · 몰입 · 개연성 · 반전 · 여운, 각 20점. 고칠 카드는 바로 바꿀 수 있어요.</p>
+        <button class="btn small tonal" id="btnReview" type="button">평가 받기</button>
+      </div>
+      <span class="status" id="reviewStatus"></span>
+      <div id="reviewBody"></div>
     </div>
 
   </section>
@@ -154,9 +177,16 @@
             <select class="input" id="font"></select>
           </div>
           <div class="field">
-            <label for="series">시리즈 이름</label>
-            <input class="input" id="series">
+            <label for="series">시리즈 이름 · 회차</label>
+            <div class="series-line">
+              <input class="input" id="series">
+              <input class="input" id="episode" type="number" min="1" max="999" inputmode="numeric" placeholder="회" aria-label="회차">
+            </div>
           </div>
+        </div>
+        <div class="toolbar">
+          <button class="btn small" id="btnNextEpisode" type="button">이 시리즈 다음 회 만들기</button>
+          <span class="hint">회차를 넣으면 표지에 ‘시리즈 · N화’로 나와요.</span>
         </div>
         <div class="row two">
           <div class="field">
@@ -177,8 +207,10 @@
             </select>
           </div>
           <button class="btn tonal" id="btnSaveOne" type="button">이 카드만 저장</button>
+          <button class="btn" id="btnInsta" type="button">인스타 미리보기</button>
           <button class="btn" id="btnShare" type="button">인스타로 공유 (20장)</button>
-          <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요.</p>
+          <div class="share-row"><button class="btn" id="btnShareLink" type="button">공유 링크 만들기</button><button class="btn" id="btnShareList" type="button">링크 목록</button></div>
+          <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요. 「공유 링크」는 인스타 없이도 넘겨 읽는 웹 페이지 주소를 만들어요.</p>
         </div>
       </div>
     </div>

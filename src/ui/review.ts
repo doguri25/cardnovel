@@ -1,0 +1,122 @@
+// Ⅲ AI 평가: scores, cards to fix with a one-click rewrite, and title/hook ideas for the cover.
+import type { App } from '../app';
+import { aiMessage, AiError } from '../ai/providers';
+import { reviewWork, totalScore } from '../ai/review';
+import { REVIEW_AXES, textSig, type ReviewAxis } from '../model';
+import { $, esc, fmtDate, setStatus, toast } from './dom';
+
+let ctl: AbortController | null = null;
+const num = (i: number) => String(i + 1).padStart(2, '0');
+
+export function renderReview(app: App): void {
+  const w = app.work();
+  const r = w.review;
+  const body = $('reviewBody');
+  $<HTMLButtonElement>('btnReview').textContent = r ? '다시 평가' : '평가 받기';
+  $<HTMLButtonElement>('btnReview').disabled = !!ctl || !app.online();
+  if (!r) {
+    body.innerHTML = '<div class="empty-note">카드를 다 채운 뒤 「평가 받기」를 누르면 다섯 가지 기준으로 읽고, 고칠 카드와 제목 후보를 알려 줘요.</div>';
+    return;
+  }
+  const stale = r.sig !== textSig(w);
+  const total = totalScore(r);
+  const axes = Object.keys(REVIEW_AXES) as ReviewAxis[];
+  body.innerHTML = `
+    <div class="eval">
+      ${stale ? '<p class="warn">평가한 뒤 카드 글이 바뀌었어요. 「다시 평가」를 누르면 지금 글로 다시 읽어요.</p>' : ''}
+      <div class="scorebar">
+        <div class="total">${total}<small>/100</small></div>
+        <div class="subs">${axes.map((a) => `<div class="sub">${REVIEW_AXES[a]}<b>${r.scores[a]}</b><div class="track"><i style="width:${(r.scores[a] / 20) * 100}%"></i></div></div>`).join('')}</div>
+      </div>
+      ${r.summary ? `<p>${esc(r.summary)}</p>` : ''}
+      ${r.strengths.length ? `<div><h3>잘된 점</h3><ul>${r.strengths.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>` : ''}
+      ${r.notes.length ? `<div><h3>고칠 카드</h3><div class="stack">${r.notes.map((n, k) => {
+        const card = w.cards[n.index];
+        const applied = !!card && card.text === n.suggestion;
+        return `
+        <div class="issue">
+          <div class="head"><button class="badge" type="button" data-go="${n.index}" title="이 카드로 가기">${num(n.index)}${n.index === 0 ? ' 표지' : ''}</button><span class="verdict ${n.verdict}">${n.verdict === 'cut' ? '바꾸기 권장' : '다듬기'}</span><span>${esc(n.issue)}</span></div>
+          ${n.suggestion ? `<div class="fix">${esc(n.suggestion)}</div>
+          <div class="toolbar"><button class="btn small ${applied ? '' : 'tonal'}" type="button" data-apply="${k}" ${applied ? 'disabled' : ''}>${applied ? '바꿨어요' : n.index === 0 ? '이 훅으로 바꾸기' : '이 문장으로 바꾸기'}</button></div>` : ''}
+        </div>`;
+      }).join('')}</div></div>` : ''}
+      ${r.titles.length ? `<div><h3>제목·훅 후보</h3><div class="stack">${r.titles.map((x, k) => {
+        const on = w.cards[0].title === x.title && (!x.hook || w.cards[0].text === x.hook);
+        return `
+        <div class="title-row"><div><b>${esc(x.title)}</b>${x.hook ? `<span class="hook">${esc(x.hook)}</span>` : ''}${x.why ? `<span class="why">${esc(x.why)}</span>` : ''}</div>
+          <button class="btn small" type="button" data-title="${k}" ${on ? 'disabled' : ''}>${on ? '표지에 있음' : '표지에 넣기'}</button></div>`;
+      }).join('')}</div></div>` : ''}
+      <p class="hint">${fmtDate(r.at)}에 평가했어요. 점수는 참고용이에요.</p>
+    </div>`;
+}
+
+/** After a suggestion is applied the review still describes this text, so it keeps matching. */
+function keepFresh(app: App, wasFresh: boolean) {
+  const w = app.work();
+  if (wasFresh && w.review) w.review.sig = textSig(w);
+}
+
+export function wireReview(app: App): void {
+  $('btnReview').addEventListener('click', () => void run(app));
+  $('reviewBody').addEventListener('click', (e) => {
+    const el = e.target as HTMLElement;
+    const w = app.work();
+    const r = w.review;
+    if (!r) return;
+    const go = el.closest<HTMLElement>('[data-go]');
+    if (go) {
+      const i = Number(go.dataset.go);
+      app.select(i);
+      document.querySelector<HTMLElement>(`.card-row[data-i="${i}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const apply = el.closest<HTMLElement>('[data-apply]');
+    if (apply) {
+      const n = r.notes[Number(apply.dataset.apply)];
+      const card = n && w.cards[n.index];
+      if (!card || !n.suggestion) return;
+      const fresh = r.sig === textSig(w);
+      app.pushUndo();
+      card.text = n.suggestion;
+      keepFresh(app, fresh);
+      app.save(); app.refreshRow(n.index); app.scheduleRender(); renderReview(app);
+      toast(`${num(n.index)}번 카드를 바꿨어요. 「되돌리기」로 돌아갈 수 있어요.`);
+      return;
+    }
+    const title = el.closest<HTMLElement>('[data-title]');
+    if (title) {
+      const x = r.titles[Number(title.dataset.title)];
+      if (!x) return;
+      const fresh = r.sig === textSig(w);
+      app.pushUndo();
+      w.cards[0].title = x.title;
+      if (x.hook) w.cards[0].text = x.hook;
+      keepFresh(app, fresh);
+      app.save(); app.refreshRow(0); app.scheduleRender(); renderReview(app);
+      toast('표지 제목과 훅을 바꿨어요.');
+    }
+  });
+}
+
+async function run(app: App) {
+  const ai = app.textAI();
+  const st = $('reviewStatus');
+  if (!ai) { setStatus(st, '글 AI 키가 필요해요. 설정에서 넣어 주세요.', 'error'); app.openSettings(); return; }
+  const w = app.work();
+  if (w.cards.filter((c) => c.kind === 'body' && c.text.trim()).length < 6) { setStatus(st, '본문을 6장 이상 채운 뒤 평가해 주세요.', 'error'); return; }
+  ctl = new AbortController();
+  renderReview(app);
+  setStatus(st, '이야기를 읽고 평가하는 중… (보통 20초 안팎)', 'busy');
+  try {
+    const r = await reviewWork(w, ai, ctl.signal);
+    if (app.work().id !== w.id) return; // another work was opened meanwhile
+    w.review = r;
+    app.save();
+    setStatus(st, r.notes.length ? `고칠 카드 ${r.notes.length}장을 찾았어요.` : '평가를 마쳤어요.');
+  } catch (e) {
+    setStatus(st, aiMessage(e), (e as AiError)?.code === 'cancelled' ? '' : 'error');
+  } finally {
+    ctl = null;
+    renderReview(app);
+  }
+}

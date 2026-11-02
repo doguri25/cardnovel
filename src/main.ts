@@ -1,18 +1,28 @@
 import './styles.css';
 import { aiMessage, AiError, listModels, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
-import { compose, drawCard, rewriteCard, writeOutro, dataUrlParts, shrinkImage, type ImageAI, type TextAI } from './ai/compose';
+import { compose, drawCard, drawCharacterSheet, rewriteCard, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
+import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import {
-  BODY_COUNT, OUTRO_KINDS, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, workTitle,
-  type Card, type ImageProvider, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
+  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, workTitle,
+  type Card, type CardLayout, type ImageProvider, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
-import { cardHeight, ensureFonts, renderCard, srcOf, W } from './render';
+import { artHeight, cardHeight, ensureFonts, layoutOf, renderCard, srcOf, W } from './render';
 import { DEFAULT_SETTINGS, keyFor, loadSettings, maskKey, saveSettings, type Settings } from './settings';
 import { kv, works } from './store';
 import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
 import { captionText, cardFileName, download, fileBase, renderAll as renderAllFiles, renderToBlob, shareCards, zipAll, type ImgFormat } from './export';
 import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, toast } from './ui/dom';
+import type { App } from './app';
+import { renderReview, wireReview } from './ui/review';
+import { openInstaPreview } from './ui/insta';
+import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
+import { shareStatus } from './share';
+import { afterLocalSave, renderDriveBox, type DriveDeps } from './ui/drive';
 import { CANVA_MESSAGES, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, readLanding } from './canva';
+
+/** Google OAuth client ID baked into the build (Vercel env VITE_GOOGLE_CLIENT_ID); the settings field overrides it. */
+const DEFAULT_GOOGLE_CLIENT_ID: string = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) || '';
 
 /* ================= state ================= */
 let settings: Settings = DEFAULT_SETTINGS;
@@ -32,6 +42,26 @@ const defaults = (): WorkDefaults => ({
   series: settings.series, handle: settings.handle, follow: settings.follow,
   textAI: { ...settings.textAI }, imageAI: { ...settings.imageAI },
 });
+
+/* ================= what feature modules may use ================= */
+const app: App = {
+  work: () => work,
+  openWork: (w) => openWork(w),
+  save: () => save(),
+  flush: async () => { clearTimeout(persistTimer); dirty = true; await persist(true); },
+  pushUndo: () => pushUndo(),
+  refreshRow: (i) => refreshRow(i),
+  select: (i) => select(i),
+  scheduleRender: () => scheduleRender(),
+  textAI: () => textAI(),
+  imageAI: () => imageAI(),
+  openSettings: () => openSettings(),
+  online: () => online(),
+};
+const shareDeps: ShareDeps = { key: () => settings.shareKey };
+const driveDeps: DriveDeps = { clientId: () => settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID, defaults: () => defaults(), reopenLibrary: () => void openLibrary() };
+let reviewTimer = 0;
+const scheduleReview = () => { clearTimeout(reviewTimer); reviewTimer = window.setTimeout(() => renderReview(app), 700); };
 
 /* ================= undo (text and order, last 20 steps) ================= */
 interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind }
@@ -82,6 +112,7 @@ async function persist(withThumb: boolean) {
     await works.put(work);
     await kv.set('currentId', work.id);
     $('savedAt').textContent = `자동 저장됨 · ${fmtTime(Date.now())}`;
+    afterLocalSave(app);
   } catch {
     dirty = true;
     $('savedAt').textContent = '자동 저장 실패 — 보관함 「내보내기」로 백업해 두세요';
@@ -205,6 +236,43 @@ function renderStyle() {
   sel.innerHTML = `<option value="">그림체 바꾸기…</option>` + STYLE_PRESETS.map((p) => `<option value="${p.preset}">${esc(p.name)}</option>`).join('');
   $<HTMLTextAreaElement>('stylePrompt').value = s.prompt;
   $<HTMLTextAreaElement>('styleChars').value = s.characters;
+  renderRefBox();
+}
+
+function renderRefBox() {
+  const ref = work.style.refImage;
+  const p = work.imageAI.provider;
+  const busy = artBusy.has('ref');
+  $('refPic').className = 'refpic' + (ref ? '' : ' empty') + (busy ? ' busy' : '');
+  $('refPic').innerHTML = ref ? `<img alt="인물 기준 그림" src="${ref}">` : '없음';
+  $<HTMLButtonElement>('btnRefAI').disabled = busy || !online();
+  $<HTMLButtonElement>('btnRefAI').textContent = ref ? 'AI로 다시' : 'AI로 만들기';
+  $<HTMLButtonElement>('btnRefCover').disabled = !work.cards[0].img;
+  $<HTMLButtonElement>('btnRefClear').hidden = !ref;
+  $('refNote').textContent = p === 'gemini' || p === 'openai'
+    ? (ref ? '모든 그림에 함께 보내 얼굴·머리·옷차림을 맞춰요.' : '인물 생김새를 고정하려면 기준 그림을 넣으세요. 모든 그림 요청에 함께 보내요.')
+    : `${IMG_NAME[p]}에는 기준 그림을 보내지 않아요. Gemini·GPT 이미지에서 쓰여요.`;
+}
+
+async function makeRefSheet() {
+  const ai = imageAI();
+  if (!ai || ai.provider === 'claude') {
+    toast(ai ? '인물 기준 그림은 Gemini 이미지나 GPT 이미지로 만들어요. 그림 AI를 바꿔 주세요.' : `${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`);
+    if (!ai && work.imageAI.provider !== 'canva' && work.imageAI.provider !== 'upload') openSettings();
+    return;
+  }
+  if (work.style.refImage && !(await confirmBox('지금 기준 그림을 새로 바꿀까요? 이미 그린 카드는 그대로예요.', { ok: '다시 만들기' }))) return;
+  artBusy.add('ref'); renderRefBox();
+  setStatus($('artStatus'), '인물 기준 그림을 그리는 중…', 'busy');
+  try {
+    work.style.refImage = await drawCharacterSheet(work, ai);
+    save();
+    setStatus($('artStatus'), '인물 기준 그림을 넣었어요. 이제부터 그리는 카드는 이 생김새를 따라요.');
+  } catch (e) {
+    setStatus($('artStatus'), aiMessage(e), 'error');
+  } finally {
+    artBusy.delete('ref'); renderRefBox();
+  }
 }
 
 /* ================= cards ================= */
@@ -220,6 +288,8 @@ function cardRowHTML(card: Card, i: number): string {
   const canAI = p !== 'upload' && p !== 'canva';
   const busy = artBusy.has(card.id);
   const pos = card.imgPos || 'center';
+  const layout = layoutOf(card);
+  const layouts: CardLayout[] = isBody ? ['stack', 'full', 'quote'] : isCover ? ['stack', 'full'] : [];
   return `
     <div class="num">
       ${isBody ? `<button type="button" data-act="up" aria-label="위로" ${i === 1 ? 'disabled' : ''}>${icons.up}</button>` : ''}
@@ -234,7 +304,8 @@ function cardRowHTML(card: Card, i: number): string {
         ${p === 'canva' && card.canvaDesignId ? `<button class="btn tiny" type="button" data-act="canvaImport" ${busy || !online() ? 'disabled' : ''}>Canva에서 가져오기</button>` : ''}
         <button class="btn tiny" type="button" data-act="upload">올리기</button>
         ${src ? '<button class="btn tiny" type="button" data-act="clear">지움</button>' : ''}
-        ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>아래</option></select>` : ''}
+        ${layouts.length ? `<select class="input pos" data-f="layout" aria-label="카드 배치">${layouts.map((l) => `<option value="${l}" ${l === layout ? 'selected' : ''}>배치 · ${LAYOUT_NAME[l]}</option>`).join('')}</select>` : ''}
+        ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>자르기 · 위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>자르기 · 가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>자르기 · 아래</option></select>` : ''}
       </div>
     </div>
     <div class="body">
@@ -246,7 +317,7 @@ function cardRowHTML(card: Card, i: number): string {
         ${isBody ? `<label class="chk" title="제목과 막대를 강조색으로"><input type="checkbox" data-f="accent" ${card.accent ? 'checked' : ''}> 강조</label>` : '<span></span>'}
         <button class="btn small" type="button" data-act="rewrite" ${!online() || (isOutro && work.outroKind === 'none') ? 'disabled' : ''}>${isCover ? '훅 다시' : '다시 쓰기'}</button>
       </div>
-      ${isBody ? `<input class="input" data-f="title" placeholder="소제목 (선택)" value="${esc(card.title)}">` : ''}
+      ${isBody ? `<input class="input" data-f="title" placeholder="${layout === 'quote' ? '말한 사람 (선택, 예: 지수)' : '소제목 (선택)'}" value="${esc(card.title)}">` : ''}
       ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문'}">${esc(card.text)}</textarea>`}
       ${isOutro ? `<div class="fixed">고정: ${esc([work.follow, work.handle].filter(Boolean).join(' · ') || '오른쪽 칸에서 팔로우 문구와 핸들을 넣으세요')}</div>` : ''}
       <div class="meta"><span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span><span class="count"></span></div>
@@ -297,6 +368,7 @@ function refreshRow(i: number) {
   if (!row) return;
   row.innerHTML = cardRowHTML(work.cards[i], i);
   updateCount(row, work.cards[i]);
+  if (i === 0) renderRefBox(); // 「표지 그림 쓰기」 depends on the cover picture
 }
 
 function select(i: number) {
@@ -325,11 +397,19 @@ function wireCardList() {
     const card = work.cards[i];
     if (f === 'outroKind') { void changeOutroKind(el.value as OutroKind); return; }
     if (f === 'imgPos') { card.imgPos = el.value as Card['imgPos']; save(); scheduleRender(); return; }
+    if (f === 'layout') {
+      const before = layoutOf(card);
+      card.layout = el.value as CardLayout;
+      save(); refreshRow(i); scheduleRender();
+      // the picture area changes shape between the top band and the whole card
+      if (srcOf(card) && (before === 'stack') !== (layoutOf(card) === 'stack')) toast('배치가 바뀌어 그림 비율이 달라졌어요. 「자르기」로 맞추거나 다시 그려 보세요.', 4200);
+      return;
+    }
     pushUndoTyping();
     if (f === 'showLabel' || f === 'accent') (card as unknown as Record<string, boolean>)[f] = el.checked;
     else (card as unknown as Record<string, string>)[f] = el.value;
     updateCount(r, card);
-    save(); scheduleRender();
+    save(); scheduleRender(); scheduleReview();
   });
 }
 
@@ -400,7 +480,7 @@ async function rewrite(i: number) {
     const text = await rewriteCard(work, i, ask, ai);
     pushUndo();
     card.text = text;
-    save(); scheduleRender();
+    save(); scheduleRender(); renderReview(app);
   } catch (e) {
     toast(aiMessage(e));
   } finally {
@@ -409,11 +489,13 @@ async function rewrite(i: number) {
 }
 
 /* ================= pictures ================= */
-function coverRef(i: number): { mime: string; b64: string } | null {
+/** Pictures sent along with a card's request: the character sheet first, then the cover (for the other cards). */
+function cardRefs(i: number): CardRefs | null {
   const p = work.imageAI.provider;
-  if (i === 0 || (p !== 'gemini' && p !== 'openai')) return null;
-  const cover = work.cards[0];
-  return cover.img ? dataUrlParts(cover.img) : null;
+  if (p !== 'gemini' && p !== 'openai') return null;
+  const chars = work.style.refImage ? dataUrlParts(work.style.refImage) : null;
+  const cover = i !== 0 && work.cards[0].img ? dataUrlParts(work.cards[0].img) : null;
+  return chars || cover ? { chars, cover } : null;
 }
 
 async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<boolean> {
@@ -429,7 +511,7 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
   refreshRow(i);
   if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 그리는 중…`, 'busy');
   try {
-    const out = await drawCard(work, i, ai, coverRef(i), signal);
+    const out = await drawCard(work, i, ai, cardRefs(i), signal);
     delete card.img; delete card.svg;
     if (out.img) card.img = out.img;
     if (out.svg) card.svg = out.svg;
@@ -495,6 +577,12 @@ async function onUpload(file: File) {
   if (i === null || !file) return;
   if (!file.type.startsWith('image/')) { toast('이미지 파일을 골라 주세요.'); return; }
   const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
+  if (i === -1) {
+    work.style.refImage = await shrinkImage(url, 1280);
+    save(); renderRefBox();
+    toast('인물 기준 그림을 넣었어요.');
+    return;
+  }
   const card = work.cards[i];
   delete card.svg;
   card.img = await shrinkImage(url);
@@ -532,8 +620,10 @@ async function runCompose() {
   $<HTMLButtonElement>('btnCompose').disabled = true;
   setStatus(st, ai ? `${PROVIDER_NAME[ai.provider]}가 20장을 구성하는 중… (보통 20초~1분)` : '원고를 카드에 앉히는 중…', 'busy');
   try {
+    const seriesCtx = ai ? await seriesContext(ai, composeCtl.signal) : undefined;
+    if (seriesCtx) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 앞 회 ${seriesCtx.previous.length}편을 이어 ${work.episode}화 20장을 구성하는 중…`, 'busy');
     const draft: Work = JSON.parse(JSON.stringify(work));
-    const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split);
+    const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split, seriesCtx);
     if (r.mode === 'split' || r.usedAI) {
       draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; } });
     }
@@ -555,6 +645,46 @@ async function runCompose() {
     $('btnComposeStop').hidden = true;
     $<HTMLButtonElement>('btnCompose').disabled = false;
   }
+}
+
+/** Episode 2 and later: the earlier episodes' summaries (written now where missing) go to the writer. */
+async function seriesContext(ai: TextAI, signal: AbortSignal): Promise<SeriesContext | undefined> {
+  if (!work.episode || work.episode < 2 || !seriesName(work)) return undefined;
+  const prev = previousEpisodes(await works.all(), work);
+  if (!prev.length) return undefined;
+  for (const p of prev) {
+    if (p.summary?.trim() || !p.cards.some((c) => c.text.trim())) continue;
+    setStatus($('composeStatus'), `${p.episode}화 줄거리를 정리하는 중…`, 'busy');
+    try { p.summary = await summarize(p, ai, signal); await works.put(p); } catch (e) { if ((e as AiError)?.code === 'cancelled') throw e; }
+  }
+  return { previous: prev.map(asPrev), keepStyle: prev[prev.length - 1].style.prompt === work.style.prompt };
+}
+
+/** Starts the next episode of `fromId`'s series with the same look, art style and character picture. */
+async function startNextEpisode(fromId: string) {
+  await persist(true);
+  const all = await works.all();
+  const from = fromId === work.id ? work : all.find((w) => w.id === fromId);
+  if (!from) return;
+  if (!seriesName(from)) { toast('시리즈 이름을 먼저 넣어 주세요. 같은 시리즈 이름끼리 회차가 이어져요.'); return; }
+  if (!from.episode) {
+    from.episode = 1;
+    await works.put(from);
+    const i = all.findIndex((w) => w.id === from.id); if (i >= 0) all[i] = from;
+  }
+  if (!from.summary && from.cards.some((c) => c.text.trim())) {
+    const ai = textAI();
+    if (ai && online()) {
+      setStatus($('composeStatus'), `${from.episode}화 줄거리를 정리하는 중…`, 'busy');
+      try { from.summary = await summarize(from, ai); await works.put(from); } catch { /* summarized again at compose time */ }
+    }
+  }
+  work = nextEpisodeWork(from, defaults(), nextEpisodeNumber(all, from.series));
+  current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+  save(); renderAllUI();
+  setStatus($('composeStatus'), `「${seriesLine(work)}」 작업을 시작했어요. 이번 회 줄거리를 넣고 「카드로 만들기」를 누르면 앞 회와 이어지게 써요. 그림체와 인물 기준 그림도 그대로 가져왔어요.`);
+  $('storyPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('story').focus();
 }
 
 /* ================= preview ================= */
@@ -605,6 +735,7 @@ function renderLook() {
   }).join('');
   $<HTMLSelectElement>('font').innerHTML = FONT_CHOICES.map((f) => `<option value="${esc(f.value)}" ${f.value === work.font ? 'selected' : ''}>${esc(f.label)}</option>`).join('');
   $<HTMLInputElement>('series').value = work.series;
+  $<HTMLInputElement>('episode').value = work.episode ? String(work.episode) : '';
   $<HTMLInputElement>('handle').value = work.handle;
   $<HTMLInputElement>('follow').value = work.follow;
 }
@@ -614,6 +745,7 @@ function renderAllUI() {
   renderStyle();
   renderLook();
   buildCardList();
+  renderReview(app);
   void renderTextAI();
   void renderImageAI();
   scheduleRender();
@@ -657,13 +789,23 @@ function openSettings() {
         <select class="input" id="claudeTier"><option value="quick" ${settings.claudeArtTier === 'quick' ? 'selected' : ''}>빠름 (장당 몇 초)</option><option value="detailed" ${settings.claudeArtTier === 'detailed' ? 'selected' : ''}>정밀 (장당 30초 안팎)</option></select>
       </div>
       <p class="hint" style="margin-top:16px">가격은 자주 바뀌어요. 각 회사 가격표를 보고 맞춰 두면 그림 그리기 전에 예상 비용을 보여 줘요.</p>
+      <div class="section-title">공유 링크</div>
+      <div class="key-row" id="shareKeyRow">
+        <div class="field"><label for="shareKey">공유 열쇠 (서버의 SHARE_KEY)</label><input class="input" id="shareKey" type="password" autocomplete="off" spellcheck="false" placeholder="${settings.shareKey ? maskKey(settings.shareKey) + ' 저장됨' : 'cn-…'}"></div>
+        <button class="btn primary" type="button" data-a="shareSave">확인·저장</button>
+        <button class="btn" type="button" data-a="shareDel" ${settings.shareKey ? '' : 'disabled'}>지우기</button>
+        <div class="state" data-state></div>
+      </div>
+      <div class="section-title">구글 드라이브 백업</div>
+      <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '…apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"></div>
+      <p class="hint" style="margin-top:6px">Google Cloud 콘솔에서 만든 ‘웹 애플리케이션’ 클라이언트 ID예요. 승인된 자바스크립트 원본에 ${esc(location.origin)} 을 넣어야 해요.</p>
     </div>
     <div class="toolbar" style="margin-top:16px"><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
   {
     size: 'mid',
     wire: (box, close) => {
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
-      box.querySelectorAll<HTMLElement>('.key-row').forEach((row) => {
+      box.querySelectorAll<HTMLElement>('.key-row[data-p]').forEach((row) => {
         const p = row.dataset.p as TextProvider;
         const input = row.querySelector<HTMLInputElement>('input')!;
         const state = row.querySelector<HTMLElement>('[data-state]')!;
@@ -698,8 +840,29 @@ function openSettings() {
           void renderTextAI(); void renderImageAI();
         });
       });
+      const shareRow = box.querySelector<HTMLElement>('#shareKeyRow')!;
+      const shareInput = shareRow.querySelector<HTMLInputElement>('#shareKey')!;
+      const shareState = (msg: string, cls = '') => { const st = shareRow.querySelector<HTMLElement>('[data-state]')!; st.textContent = msg; st.className = 'state ' + cls; };
+      shareRow.querySelector('[data-a="shareSave"]')!.addEventListener('click', async () => {
+        const key = shareInput.value.trim();
+        if (!key) { shareState('열쇠를 붙여 넣어 주세요.', 'bad'); return; }
+        shareState('확인하는 중…');
+        const st = await shareStatus(key);
+        if (st && !st.keyOk) { shareState(st.enabled ? '열쇠가 맞지 않아요.' : '서버에 공유 저장소가 아직 설정되지 않았어요.', 'bad'); return; }
+        settings.shareKey = key;
+        await saveSettings(settings);
+        shareInput.value = ''; shareInput.placeholder = maskKey(key) + ' 저장됨';
+        shareRow.querySelector<HTMLButtonElement>('[data-a="shareDel"]')!.disabled = false;
+        shareState(st ? '확인했어요. 이제 공유 링크를 만들 수 있어요.' : '저장했어요. (지금은 서버에 닿지 않아 확인은 못 했어요)', st ? 'ok' : '');
+      });
+      shareRow.querySelector('[data-a="shareDel"]')!.addEventListener('click', async () => {
+        settings.shareKey = ''; await saveSettings(settings);
+        shareInput.placeholder = 'cn-…'; shareRow.querySelector<HTMLButtonElement>('[data-a="shareDel"]')!.disabled = true;
+        shareState('지웠어요.');
+      });
       box.querySelector('[data-a="done"]')!.addEventListener('click', async () => {
         const v = (id: string) => (box.querySelector<HTMLInputElement>('#' + id)!.value);
+        settings.googleClientId = v('googleClientId').trim();
         settings.series = v('setSeries').trim();
         settings.handle = v('setHandle').trim();
         settings.follow = v('setFollow').trim();
@@ -716,11 +879,13 @@ function openSettings() {
 
 /* ================= library ================= */
 async function openLibrary() {
-  const all = (await works.all()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  await persist(true);
+  const all = await works.all();
+  const groups = groupBySeries(all);
   const item = (w: Work) => `
     <div class="work ${w.id === work.id ? 'current' : ''}" data-id="${esc(w.id)}">
       ${w.thumb ? `<img alt="" src="${w.thumb}">` : '<div class="noimg">그림 없음</div>'}
-      <div><b>${esc(w.name || workTitle(w))}</b><span>${fmtDate(w.updatedAt)} · ${w.cards.filter((c) => c.text.trim()).length}/20장 글 · ${w.cards.filter((c) => c.img || c.svg).length}장 그림</span></div>
+      <div><b>${w.episode ? `<span class="ep">${w.episode}화</span>` : ''}${esc(w.name || workTitle(w))}</b><span>${fmtDate(w.updatedAt)} · ${w.cards.filter((c) => c.text.trim()).length}/20장 글 · ${w.cards.filter((c) => c.img || c.svg).length}장 그림</span></div>
       <div class="acts">
         ${w.id === work.id ? '<span class="hint">지금 작업</span>' : '<button class="btn small" type="button" data-a="open">열기</button>'}
         <button class="btn small" type="button" data-a="copy">사본</button>
@@ -728,6 +893,14 @@ async function openLibrary() {
         <button class="btn small" type="button" data-a="del" ${w.id === work.id ? 'disabled' : ''}>삭제</button>
       </div>
     </div>`;
+  const group = (g: { name: string; works: Work[] }) => `
+    <section class="series-group">
+      <div class="series-head">
+        <h3>${g.name ? esc(g.name) : '시리즈 없음'}<small>${g.works.length}편</small></h3>
+        ${g.name ? `<button class="btn small tonal" type="button" data-a="next" data-id="${esc(g.works[g.works.length - 1].id)}">다음 회 만들기</button>` : ''}
+      </div>
+      ${g.works.map(item).join('')}
+    </section>`;
   openModal(`
     <div class="panel-head"><h2>작품 보관함</h2>
       <div class="toolbar">
@@ -736,12 +909,14 @@ async function openLibrary() {
         <button class="btn icon" type="button" data-a="close" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4l-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"/></svg></button>
       </div>
     </div>
-    <p class="hint" style="margin-bottom:12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 다른 기기로 옮기려면 「내보내기」 파일을 그 기기에서 「가져오기」 하세요. 구글 드라이브 백업은 다음 단계에서 들어가요.</p>
-    <div class="lib">${all.length ? all.map(item).join('') : '<div class="empty-note">아직 저장된 작품이 없어요.</div>'}</div>`,
+    <div class="drive-box" id="driveBox"></div>
+    <p class="hint" style="margin:0 0 12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 같은 시리즈 이름끼리 묶이고, 「다음 회 만들기」는 그림체·인물 기준 그림·테마를 그대로 가져가요.</p>
+    <div class="lib">${all.length ? groups.map(group).join('') : '<div class="empty-note">아직 저장된 작품이 없어요.</div>'}</div>`,
   {
     size: 'wide',
     wire: (box, close) => {
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
+      void renderDriveBox(box.querySelector<HTMLElement>('#driveBox')!, app, driveDeps, close);
       box.querySelector('[data-a="new"]')!.addEventListener('click', async () => {
         await persist(true);
         work = newWork(defaults());
@@ -750,16 +925,15 @@ async function openLibrary() {
         toast('새 작품을 시작했어요.');
       });
       box.querySelector('[data-a="import"]')!.addEventListener('click', () => { const f = $<HTMLInputElement>('libFile'); f.value = ''; f.click(); close(); });
+      box.querySelectorAll<HTMLButtonElement>('[data-a="next"]').forEach((b) => b.addEventListener('click', () => { close(); void startNextEpisode(b.dataset.id!); }));
       box.querySelectorAll<HTMLElement>('.work').forEach((el) => {
         const id = el.dataset.id!;
         el.querySelector('[data-a="open"]')?.addEventListener('click', async () => {
           await persist(true);
           const w = await works.get(id);
           if (!w) return;
-          work = normalizeWork(w, defaults());
-          current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
-          await kv.set('currentId', work.id);
-          renderAllUI(); close();
+          await openWork(w);
+          close();
         });
         el.querySelector('[data-a="copy"]')!.addEventListener('click', async () => {
           const w = id === work.id ? work : await works.get(id);
@@ -782,6 +956,13 @@ async function openLibrary() {
       });
     },
   });
+}
+
+async function openWork(w: Work) {
+  work = normalizeWork(w, defaults());
+  current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+  await kv.set('currentId', work.id);
+  renderAllUI();
 }
 
 async function importFile(file: File) {
@@ -848,6 +1029,9 @@ function wire() {
   $('btnSaveAll').addEventListener('click', () => void saveAll());
   $('btnSaveOne').addEventListener('click', () => void saveOne());
   $('btnShare').addEventListener('click', () => void share());
+  $('btnInsta').addEventListener('click', () => void openInstaPreview(app));
+  $('btnShareLink').addEventListener('click', () => void makeShareLink(app, shareDeps, $<HTMLButtonElement>('btnShareLink')));
+  $('btnShareList').addEventListener('click', () => void openShareList(app, shareDeps));
   $('btnUndo').addEventListener('click', undo);
   document.addEventListener('keydown', (e) => {
     const tag = (e.target as HTMLElement)?.tagName;
@@ -891,14 +1075,19 @@ function wire() {
   $('stylePreset').addEventListener('change', () => {
     const v = $<HTMLSelectElement>('stylePreset').value;
     if (!v) return;
-    const keepChars = work.style.characters;
+    const keepChars = work.style.characters, keepRef = work.style.refImage;
     work.style = presetStyle(v);
     if (keepChars && !work.style.characters) work.style.characters = keepChars;
+    if (keepRef) work.style.refImage = keepRef;
     save(); renderStyle();
     toast(`그림체를 ‘${work.style.name}’(으)로 바꿨어요. 새로 그리는 그림부터 적용돼요.`);
   });
   $('stylePrompt').addEventListener('input', () => { work.style.prompt = $<HTMLTextAreaElement>('stylePrompt').value; if (work.style.preset !== 'ai') work.style.preset = 'custom'; save(); });
   $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; save(); });
+  $('btnRefAI').addEventListener('click', () => void makeRefSheet());
+  $('btnRefUpload').addEventListener('click', () => { uploadTarget = -1; const fi = $<HTMLInputElement>('fileInput'); fi.value = ''; fi.click(); });
+  $('btnRefCover').addEventListener('click', () => { if (work.cards[0].img) { work.style.refImage = work.cards[0].img; save(); renderRefBox(); toast('표지 그림을 인물 기준 그림으로 썼어요.'); } });
+  $('btnRefClear').addEventListener('click', () => { delete work.style.refImage; save(); renderRefBox(); });
 
   // pictures
   $('imageProvider').addEventListener('change', () => {
@@ -906,7 +1095,7 @@ function wire() {
     const remembered = p === 'gemini' ? settings.models.geminiImage : p === 'openai' ? settings.models.openaiImage : p === 'claude' ? settings.models.anthropic : '';
     work.imageAI = { provider: p, model: remembered };
     settings.imageAI = { ...work.imageAI };
-    void saveSettings(settings); save(); void renderImageAI(); buildCardList(); scheduleRender();
+    void saveSettings(settings); save(); void renderImageAI(); buildCardList(); renderRefBox(); scheduleRender();
   });
   $('imageModel').addEventListener('change', () => {
     const m = $<HTMLSelectElement>('imageModel').value;
@@ -921,6 +1110,7 @@ function wire() {
   $('fileInput').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void onUpload(f); });
   $('libFile').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void importFile(f); });
   wireCardList();
+  wireReview(app);
 
   // look
   $('ratioSeg').addEventListener('click', (e) => {
@@ -936,6 +1126,12 @@ function wire() {
     save(); renderLook(); scheduleRender();
   });
   $('font').addEventListener('change', () => { work.font = $<HTMLSelectElement>('font').value; save(); scheduleRender(); });
+  $('episode').addEventListener('input', () => {
+    const n = parseInt($<HTMLInputElement>('episode').value, 10);
+    if (n >= 1 && n <= 999) work.episode = n; else delete work.episode;
+    save(); scheduleRender();
+  });
+  $('btnNextEpisode').addEventListener('click', () => void startNextEpisode(work.id));
   for (const f of ['series', 'handle', 'follow'] as const) {
     $(f).addEventListener('input', () => { work[f] = $<HTMLInputElement>(f).value; save(); renderStoryPanel(); refreshRow(TOTAL_CARDS - 1); scheduleRender(); });
   }
@@ -945,7 +1141,7 @@ function wire() {
   $('btnNext').addEventListener('click', () => select((current + 1) % TOTAL_CARDS));
 
   // online state
-  const net = () => { $('offlinePill').hidden = online(); buildCardList(); void renderImageAI(); scheduleRender(); };
+  const net = () => { $('offlinePill').hidden = online(); buildCardList(); renderReview(app); void renderImageAI(); scheduleRender(); };
   window.addEventListener('online', net);
   window.addEventListener('offline', net);
 
@@ -1013,7 +1209,7 @@ async function openInCanva(i: number) {
   setStatus(st, `${i + 1}번 카드를 Canva로 보내는 중…`, 'busy');
   try {
     const w = W;
-    const h = card.kind === 'outro' ? Math.round(cardHeight(work) * 0.42) : ratioOf(work.ratio).art;
+    const h = artHeight(work, card);
     const src = srcOf(card);
     const image = src ? await pictureForCanva(src, w, h, card.imgPos) : undefined;
     const r = await createDesign({ width: w, height: h, title: `${workTitle(work)} ${String(i + 1).padStart(2, '0')}`, image, state: canvaState(work.id, card.id) });

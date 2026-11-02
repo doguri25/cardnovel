@@ -16,6 +16,10 @@ export interface Settings {
   /** estimated price in USD per picture, editable because prices change */
   prices: { gemini: number; openai: number; claude: number };
   claudeArtTier: 'quick' | 'detailed';
+  /** owner key for share links (the SHARE_KEY set on the server) */
+  shareKey: string;
+  /** Google OAuth client ID for Drive backup (empty: the build's default, if any) */
+  googleClientId: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -28,6 +32,8 @@ export const DEFAULT_SETTINGS: Settings = {
   models: { anthropic: '', google: '', openai: '', geminiImage: '', openaiImage: '' },
   prices: { gemini: 0.04, openai: 0.06, claude: 0.03 },
   claudeArtTier: 'quick',
+  shareKey: '',
+  googleClientId: '',
 };
 
 export async function loadSettings(): Promise<Settings> {
