@@ -1038,10 +1038,16 @@ function openSettings(pane: SettingsPane = 'keys') {
         <div class="state" data-state></div>
       </div>
       <div class="section-title">구글 드라이브 백업</div>
-      <p class="hint" style="margin-bottom:10px">작품을 내 구글 드라이브의 「${esc(FOLDER_NAME)}」 폴더에 작품마다 파일 하나로 백업하고, 다른 기기에서 이어서 열 수 있어요. 처음 한 번, 내 구글 계정으로 <b>OAuth 클라이언트 ID</b>를 만들어 아래 칸에 넣으면 돼요(10분쯤, 무료).${DEFAULT_GOOGLE_CLIENT_ID ? ' 이 앱에는 기본 ID가 들어 있어 비워 둬도 돼요.' : ''}</p>
-      <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '1234567890-abc….apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"><span class="state" id="gcidState"></span></div>
+      <p class="hint" style="margin-bottom:10px">${DEFAULT_GOOGLE_CLIENT_ID
+        ? `아래 「드라이브 연결」을 누르고 구글 계정에서 허용하면 끝이에요. 작품을 내 드라이브의 「${esc(FOLDER_NAME)}」 폴더에 작품마다 파일 하나로 백업하고, 다른 기기에서 이어서 열 수 있어요. 이 앱이 만든 파일만 볼 수 있어요.`
+        : `작품을 내 구글 드라이브의 「${esc(FOLDER_NAME)}」 폴더에 작품마다 파일 하나로 백업하고, 다른 기기에서 이어서 열 수 있어요. 처음 한 번, 내 구글 계정으로 <b>OAuth 클라이언트 ID</b>를 만들어 아래 칸에 넣은 뒤 「드라이브 연결」을 누르면 돼요(10분쯤, 무료).`}</p>
+      <div class="drive-box" id="setDriveBox"></div>
+      ${DEFAULT_GOOGLE_CLIENT_ID ? `<details class="own-id" id="ownId" ${settings.googleClientId && settings.googleClientId !== DEFAULT_GOOGLE_CLIENT_ID ? 'open' : ''}>
+        <summary>직접 만든 클라이언트 ID 쓰기 (선택)</summary>
+        <p class="hint">보통은 필요 없어요. 내 구글 클라우드 프로젝트로 연결하고 싶을 때만 넣어요. 비워 두면 앱 기본 ID를 써요.</p>` : ''}
+      <div class="field"><label for="googleClientId">${DEFAULT_GOOGLE_CLIENT_ID ? '직접 만든 클라이언트 ID (선택)' : 'Google OAuth 클라이언트 ID'}</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${DEFAULT_GOOGLE_CLIENT_ID ? '비워 두면 앱 기본 ID를 써요' : '1234567890-abc….apps.googleusercontent.com'}" value="${esc(settings.googleClientId)}"><span class="state" id="gcidState">${DEFAULT_GOOGLE_CLIENT_ID && settings.googleClientId === DEFAULT_GOOGLE_CLIENT_ID ? '앱 기본 ID와 같아요. 비워 둬도 똑같이 동작해요.' : ''}</span></div>
       <details class="guide" id="driveGuide" ${settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID ? '' : 'open'}>
-        <summary>클라이언트 ID 만드는 법 (처음 한 번)</summary>
+        <summary>${DEFAULT_GOOGLE_CLIENT_ID ? '내 클라이언트 ID 만드는 법' : '클라이언트 ID 만드는 법 (처음 한 번)'}</summary>
         <ol>
           <li><b>Google Cloud 콘솔 열기</b><span><a href="https://console.cloud.google.com/" target="_blank" rel="noopener">console.cloud.google.com</a>에 드라이브를 쓸 구글 계정으로 로그인해요. 처음이면 국가를 고르고 약관에 동의해요.</span></li>
           <li><b>프로젝트 만들기</b><span>맨 위 프로젝트 선택 상자 → 「새 프로젝트」 → 이름 <code>cardnovel</code> → 「만들기」. 다 만들어지면 위 상자에서 그 프로젝트가 선택돼 있는지 확인해요.</span></li>
@@ -1066,6 +1072,7 @@ function openSettings(pane: SettingsPane = 'keys') {
           </ul>
         </div>
       </details>
+      ${DEFAULT_GOOGLE_CLIENT_ID ? '</details>' : ''}
       </div>
     </div>
     <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)} · <a href="./about.html" target="_blank" rel="noopener">앱 소개</a> · <a href="./privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="./terms.html" target="_blank" rel="noopener">이용약관</a></span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
@@ -1134,6 +1141,27 @@ function openSettings(pane: SettingsPane = 'keys') {
         shareInput.placeholder = 'cn-…'; shareRow.querySelector<HTMLButtonElement>('[data-a="shareDel"]')!.disabled = true;
         shareState('지웠어요.');
       });
+      // Drive: connect, back up and restore right here; a valid client ID typed above is saved and used at once
+      const gcidInput = box.querySelector<HTMLInputElement>('#googleClientId')!;
+      const gcidState = box.querySelector<HTMLElement>('#gcidState')!;
+      const driveEl = box.querySelector<HTMLElement>('#setDriveBox')!;
+      const settingsDrive: DriveDeps = { ...driveDeps, reopenLibrary: () => openSettings('connect') };
+      const paintDrive = () => void renderDriveBox(driveEl, app, settingsDrive, close, { inSettings: true });
+      paintDrive();
+      const checkGcid = async (commit: boolean) => {
+        const v = gcidInput.value.trim();
+        gcidState.className = 'state';
+        if (!v) gcidState.textContent = '';
+        else if (!isGoogleClientId(v)) { gcidState.textContent = /GOCSPX|secret/i.test(v) ? '이건 「클라이언트 보안 비밀번호」 같아요. 「클라이언트 ID」(….apps.googleusercontent.com)를 넣어 주세요.' : '클라이언트 ID는 ….apps.googleusercontent.com 으로 끝나요.'; gcidState.className = 'state bad'; return; }
+        else gcidState.textContent = DEFAULT_GOOGLE_CLIENT_ID && v === DEFAULT_GOOGLE_CLIENT_ID ? '앱 기본 ID와 같아요. 비워 둬도 똑같이 동작해요.' : commit ? '저장했어요. 이 ID로 연결해요.' : '';
+        if (commit && v !== settings.googleClientId) {
+          settings.googleClientId = v;
+          await saveSettings(settings);
+          paintDrive();
+        }
+      };
+      gcidInput.addEventListener('input', () => void checkGcid(false));
+      gcidInput.addEventListener('change', () => void checkGcid(true));
       box.querySelector('[data-a="copyOrigin"]')?.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(location.origin); toast('주소를 복사했어요.'); } catch { toast('복사가 막혔어요. 주소를 직접 골라 복사해 주세요.'); }
       });

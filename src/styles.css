@@ -738,3 +738,9 @@ button.link:hover { text-decoration-color: currentColor; }
 .guide .copy-line code { font-size: 13px; padding: 3px 8px; }
 .guide-help { margin: 10px 14px 14px; padding: 10px 12px; border-radius: 10px; background: var(--surface); font-size: 12.5px; line-height: 1.6; }
 .guide-help ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+#setDriveBox { margin-bottom: 4px; }
+.own-id { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; }
+.own-id > summary { cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 13.5px; }
+.own-id[open] { padding-bottom: 12px; }
+.own-id > .hint { margin: 0 0 10px; }
+.own-id .guide { background: var(--surface); }

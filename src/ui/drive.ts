@@ -40,10 +40,15 @@ export function afterLocalSave(app: App): void {
   }, 20_000);
 }
 
-export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps, closeLibrary: () => void): Promise<void> {
+/** `inSettings`: drawn inside 설정 → 연결, right above the client ID field (so no 「설정 방법 보기」 there). */
+export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps, closeLibrary: () => void, opts: { inSettings?: boolean } = {}): Promise<void> {
   const clientId = deps.clientId();
   el.hidden = false;
   if (!clientId) {
+    if (opts.inSettings) {
+      el.innerHTML = '<div class="drive-line"><b>구글 드라이브 백업</b><span class="hint">아래 칸에 클라이언트 ID를 넣으면 여기서 바로 연결할 수 있어요. 만드는 법은 그 아래에 있어요.</span></div>';
+      return;
+    }
     el.innerHTML = `<div class="drive-line"><b>구글 드라이브 백업</b><span class="hint">처음 한 번 구글 클라이언트 ID를 만들어 설정에 넣으면 쓸 수 있어요. 설정에 단계별 방법이 있어요.</span><button class="btn small" type="button" data-a="settings">설정 방법 보기</button></div>`;
     el.querySelector('[data-a="settings"]')!.addEventListener('click', () => { closeLibrary(); app.openSettings('connect'); });
     return;
@@ -55,7 +60,11 @@ export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps,
     el.querySelector('[data-a="connect"]')!.addEventListener('click', async () => {
       const st = el.querySelector<HTMLElement>('[data-status]')!;
       setStatus(st, '구글 로그인 창에서 허용을 눌러 주세요…', 'busy');
-      try { await connect(clientId); void renderDriveBox(el, app, deps, closeLibrary); } catch (e) { setStatus(st, driveMessage(e), 'error'); }
+      try {
+        await connect(clientId);
+        void renderDriveBox(el, app, deps, closeLibrary, opts);
+        toast('구글 드라이브에 연결했어요. 「이 작품 백업」이나 「저장할 때 자동 백업」을 써 보세요.', 5000);
+      } catch (e) { setStatus(st, driveMessage(e), 'error'); }
     });
     return;
   }
@@ -73,9 +82,9 @@ export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps,
   const st = el.querySelector<HTMLElement>('[data-status]')!;
   const fail = (e: unknown) => {
     setStatus(st, driveMessage(e), 'error');
-    if (e instanceof DriveError && e.code === 'auth') void renderDriveBox(el, app, deps, closeLibrary);
+    if (e instanceof DriveError && e.code === 'auth') void renderDriveBox(el, app, deps, closeLibrary, opts);
   };
-  el.querySelector('[data-a="off"]')!.addEventListener('click', () => { disconnect(); void kv.set('drive.linked', false); void renderDriveBox(el, app, deps, closeLibrary); });
+  el.querySelector('[data-a="off"]')!.addEventListener('click', () => { disconnect(); void kv.set('drive.linked', false); void renderDriveBox(el, app, deps, closeLibrary, opts); });
   el.querySelector<HTMLInputElement>('[data-a="continue"]')!.addEventListener('change', (e) => {
     continueAuto = (e.target as HTMLInputElement).checked;
     void kv.set('drive.continue', continueAuto);
