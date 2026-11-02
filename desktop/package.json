@@ -1,7 +1,7 @@
 {
   "name": "cardnovel-desktop",
   "productName": "카드소설 제작소",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "이야기를 넣으면 20장 카드소설로 만들어 주는 앱 (데스크톱)",
   "author": "doguri25 <doguri25@users.noreply.github.com>",
   "homepage": "https://cardnovel.vercel.app",
