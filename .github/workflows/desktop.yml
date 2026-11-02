@@ -42,26 +42,28 @@ jobs:
         run: npx electron-builder ${{ matrix.args }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Diagnose the macOS app launch
+      # every installer is launched once on its own OS: it must open cardnovel.vercel.app and show 20 cards
+      - name: Smoke test the packaged app (macOS, copied out of the dmg the way a user does)
         if: runner.os == 'macOS'
-        continue-on-error: true
         run: |
           set -x
-          export ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1
-          run() { "$@" --smoke-test --enable-logging=stderr 2>&1 | tail -40; echo "exit=${PIPESTATUS[0]}"; }
-          echo '== 1. from source'
-          run npx electron .
-          echo '== 2. packaged (before the dmg)'
-          APP1=$(ls -d dist/mac-arm64/*.app)
-          run "$APP1/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP1/Contents/Info.plist")"
-          echo '== 3. packaged with an ASCII name'
-          npx electron-builder --mac --publish never -c.productName=CardNovel -c.directories.output=dist-ascii
-          run dist-ascii/mac-arm64/CardNovel.app/Contents/MacOS/CardNovel
-          echo '== crash reports'
-          ls -t ~/Library/Logs/DiagnosticReports/ | head -5
-          for f in $(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -2); do echo "--- $f"; head -c 6000 "$f"; echo; done
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          MNT=$(mktemp -d)
+          hdiutil attach dist/*-mac-arm64.dmg -nobrowse -readonly -mountpoint "$MNT"
+          rm -rf /tmp/inst && mkdir -p /tmp/inst && cp -R "$MNT"/*.app /tmp/inst/
+          hdiutil detach "$MNT"
+          APP=$(ls -d /tmp/inst/*.app)
+          codesign --verify --deep --strict "$APP"
+          "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --smoke-test
+          # what Gatekeeper says about a downloaded copy (the app has no Apple Developer ID, so it is rejected until "Open Anyway")
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "$APP"
+          spctl --assess --type execute -vv "$APP" || true
+      - name: Smoke test the packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./dist/win-unpacked/CardNovel.exe --smoke-test
+      - name: Smoke test the packaged app (Ubuntu)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./dist/linux-unpacked/cardnovel --smoke-test --no-sandbox
       - uses: actions/upload-artifact@v4
         with:
           name: CardNovel-${{ matrix.name }}
@@ -109,8 +111,11 @@ jobs:
             | Ubuntu | `CardNovel-*-linux-amd64.deb` 또는 `CardNovel-*-linux-x86_64.AppImage` |
 
             **처음 열 때 경고가 뜹니다** (Apple·Microsoft 개발자 서명이 없어서입니다)
-            - macOS: 처음 열면 막힙니다. 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」.
+            - macOS: dmg를 열고 `CardNovel`을 응용 프로그램 폴더로 끌어 넣습니다. 처음 열면 「열리지 않음」 창이 뜨면 「완료」를 누르고, 시스템 설정 → 개인정보 보호 및 보안 → 맨 아래 「그래도 열기」 → 암호 입력 → 다시 「그래도 열기」. 한 번만 하면 됩니다.
+            - macOS에서 「손상되었기 때문에 열 수 없습니다」가 뜨면 터미널에서 `xattr -cr /Applications/CardNovel.app` 을 실행한 뒤 다시 엽니다.
             - Windows: 'Windows의 PC 보호' 창에서 「추가 정보」 → 「실행」.
             - Ubuntu: `.deb`는 더블클릭하거나 `sudo apt install ./CardNovel-*-linux-amd64.deb`. AppImage는 실행 권한을 준 뒤 실행.
+
+            0.1.1: macOS 앱이 실행되자마자 꺼지던 문제를 고쳤습니다(앱 파일 이름을 영문 `CardNovel`로 바꿈). 0.1.0의 macOS 파일은 쓰지 마세요.
 
             데스크톱 앱의 작품과 API 키는 브라우저와 따로 저장됩니다. 옮기려면 보관함의 「내보내기」 → 「가져오기」를 쓰세요.

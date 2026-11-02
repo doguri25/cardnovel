@@ -65,7 +65,9 @@ Canva 토큰은 `/api/canva` 경로에만 붙는 암호화된 HttpOnly 쿠키에
 
 - 설치 파일은 GitHub Actions(`.github/workflows/desktop.yml`)가 세 OS에서 만든다. `desktop/`을 바꿔 푸시하면 빌드 후 `desktop-v<버전>` 릴리즈(https://github.com/doguri25/cardnovel/releases)에 설치 파일이 올라간다. 버전은 `desktop/package.json`에서 정한다.
 - 파일: macOS(Apple Silicon만) `CardNovel-<버전>-mac-arm64.dmg`, Windows `CardNovel-<버전>-win-x64.exe`, Ubuntu `CardNovel-<버전>-linux-amd64.deb`·`-linux-x86_64.AppImage`
-- 개발자 서명이 없어 처음 열 때 경고가 뜬다. 맥: 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」. 윈도우: 「추가 정보」 → 「실행」.
+- 설치된 앱 파일 이름은 영문 `CardNovel`이다(맥에서 한글 앱 파일 이름은 패키징한 앱이 실행 직후 꺼지는 문제가 있어서). 창 제목·메뉴·Dock·바로 가기 이름은 「카드소설 제작소」이고, 작품·키가 저장되는 폴더 이름도 그대로다.
+- CI가 세 OS에서 설치 파일을 만든 뒤 각 OS에서 한 번씩 실행해 20장 화면이 뜨는지 확인한다(맥은 dmg에서 꺼낸 앱으로).
+- 개발자 서명이 없어 처음 열 때 경고가 뜬다. 맥: 「열리지 않음」 창에서 「완료」 → 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」(「손상되었기 때문에…」가 뜨면 터미널에서 `xattr -cr /Applications/CardNovel.app`). 윈도우: 「추가 정보」 → 「실행」.
 - 데스크톱 앱의 작품·키 저장소는 브라우저와 따로다. 옮기려면 보관함의 「내보내기」/「가져오기」를 쓴다.
 
 ```bash

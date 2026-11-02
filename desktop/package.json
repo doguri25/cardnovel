@@ -1,7 +1,7 @@
 {
   "name": "cardnovel-desktop",
   "productName": "카드소설 제작소",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "이야기를 넣으면 20장 카드소설로 만들어 주는 앱 (데스크톱)",
   "author": "doguri25 <doguri25@users.noreply.github.com>",
   "homepage": "https://cardnovel.vercel.app",
@@ -14,7 +14,7 @@
   },
   "build": {
     "appId": "app.vercel.cardnovel",
-    "productName": "카드소설 제작소",
+    "productName": "CardNovel",
     "artifactName": "CardNovel-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist",
@@ -36,7 +36,10 @@
       ],
       "category": "public.app-category.productivity",
       "identity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "카드소설 제작소"
+      }
     },
     "dmg": {
       "title": "카드소설 제작소"
@@ -56,7 +59,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "카드소설 제작소"
+      "shortcutName": "카드소설 제작소",
+      "uninstallDisplayName": "카드소설 제작소"
     },
     "linux": {
       "target": [
@@ -77,7 +81,13 @@
       "category": "Office",
       "synopsis": "이야기를 20장 카드소설로",
       "maintainer": "doguri25 <doguri25@users.noreply.github.com>",
-      "syncDesktopName": true
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "카드소설 제작소",
+          "Comment": "이야기를 20장 카드소설로"
+        }
+      }
     },
     "publish": null
   },
