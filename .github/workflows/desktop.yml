@@ -42,6 +42,28 @@ jobs:
         run: npx electron-builder ${{ matrix.args }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Check the macOS app the way a user gets it (copied out of the dmg)
+        if: runner.os == 'macOS'
+        run: |
+          set -x
+          DMG=$(ls dist/*-mac-arm64.dmg)
+          MNT=$(mktemp -d)
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT"
+          ls -la "$MNT"
+          rm -rf /tmp/inst && mkdir -p /tmp/inst
+          cp -R "$MNT"/*.app /tmp/inst/
+          hdiutil detach "$MNT"
+          APP=$(ls -d /tmp/inst/*.app)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          ls "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
+          file "$APP/Contents/MacOS/$EXE"
+          codesign -dv --verbose=2 "$APP" 2>&1
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          "$APP/Contents/MacOS/$EXE" --smoke-test
+          # what Gatekeeper says about a downloaded copy (informational: the app has no Apple Developer ID)
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "$APP"
+          spctl --assess --type execute -vv "$APP" || true
+          syspolicy_check distribution "$APP" || true
       - uses: actions/upload-artifact@v4
         with:
           name: CardNovel-${{ matrix.name }}
