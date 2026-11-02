@@ -100,7 +100,7 @@ export const totalScore = (r: Review): number => AXES.reduce((n, a) => n + (r.sc
 export async function reviewWork(w: Work, ai: TextAI, signal?: AbortSignal): Promise<Review> {
   const body = w.cards.filter((c) => c.kind === 'body' && c.text.trim()).length;
   if (body < 6) throw new AiError('bad_request', '본문을 6장 이상 채운 뒤 평가해 주세요');
-  const req = { ...ai, system: SYSTEM_WRITER, prompt: reviewPrompt(w), schema: REVIEW_SCHEMA, signal, maxTokens: 6000 };
+  const req = { ...ai, system: SYSTEM_WRITER, prompt: reviewPrompt(w), schema: REVIEW_SCHEMA, signal, maxTokens: 6000, tag: 'review' as const };
   let raw: RawReview;
   try { raw = await generateJSON<RawReview>(req); } catch (e) {
     if (e instanceof AiError && e.code === 'invalid_json') raw = await generateJSON<RawReview>(req); else throw e;

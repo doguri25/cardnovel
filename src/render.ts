@@ -1,8 +1,8 @@
 // Canvas card renderer, ported from the 카드소설 제작소 artifact.
 // Picture on top, words below; without a picture the words sit in the middle.
 import type { Card, Work } from './model';
-import { seriesLine, TOTAL_CARDS } from './model';
-import { fontFor, ratioOf, themeOf, weightFor, type Theme } from './themes';
+import { parseMarks, seriesLine, TOTAL_CARDS, type TextPos } from './model';
+import { fontForWork, ratioOf, themeOfWork, weightFor, type Theme } from './themes';
 
 export const W = 1080;
 export const PAD = 100;
@@ -51,6 +51,51 @@ export function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number):
   }
   return lines;
 }
+
+/* ---------- emphasis: *words* in the accent colour ---------- */
+export interface RichLine { text: string; marks: boolean[] }
+
+/** wrap() for text with *emphasis* markers: the markers are removed and each line keeps a flag per character. */
+export function wrapRich(ctx: CanvasRenderingContext2D, text: string, maxW: number): RichLine[] {
+  const { plain, flags } = parseMarks(String(text ?? ''));
+  const out: RichLine[] = [];
+  let p = 0;
+  for (const l of wrap(ctx, plain, maxW)) {
+    if (!l) { out.push({ text: '', marks: [] }); continue; }
+    // wrap() drops the newline between paragraphs and the space it breaks at; skip them
+    while (p < plain.length && !plain.startsWith(l, p)) p++;
+    out.push({ text: l, marks: flags.slice(p, p + l.length) });
+    p += l.length;
+  }
+  return out;
+}
+
+/** Draws one line at x (honouring textAlign) in the current fill; marked runs in `emph`. */
+export function drawRich(ctx: CanvasRenderingContext2D, rl: RichLine, x: number, y: number, emph: string): void {
+  if (!rl.marks.some(Boolean)) { ctx.fillText(rl.text, x, y); return; }
+  const base = ctx.fillStyle, align = ctx.textAlign;
+  const total = ctx.measureText(rl.text).width;
+  let cx = align === 'center' ? x - total / 2 : align === 'right' || align === 'end' ? x - total : x;
+  ctx.textAlign = 'left';
+  for (let i = 0; i < rl.text.length;) {
+    const on = rl.marks[i];
+    let j = i;
+    while (j < rl.text.length && rl.marks[j] === on) j++;
+    const seg = rl.text.slice(i, j);
+    ctx.fillStyle = on ? emph : base;
+    ctx.fillText(seg, cx, y);
+    cx += ctx.measureText(seg).width;
+    i = j;
+  }
+  ctx.fillStyle = base; ctx.textAlign = align;
+}
+
+/** The emphasis colour: the accent, or the text colour where the line itself is already in the accent. */
+const emphFor = (ctx: CanvasRenderingContext2D, theme: Theme): string =>
+  String(ctx.fillStyle).toLowerCase() === theme.accent.toLowerCase() ? theme.text : theme.accent;
+
+/** 0 = top of the text zone, 1 = bottom; auto uses the layout's own default. */
+const posF = (pos: TextPos | undefined, auto: number): number => (pos === 'top' ? 0 : pos === 'center' ? 0.5 : pos === 'bottom' ? 1 : auto);
 
 let noiseTile: HTMLCanvasElement | null = null;
 function makeNoise(): HTMLCanvasElement {
@@ -228,7 +273,7 @@ export function sanitizeSVG(src: string): string | null {
 /* ---------- fonts ---------- */
 export async function ensureFonts(work: Work): Promise<void> {
   if (!('fonts' in document)) return;
-  const family = fontFor(work.theme, work.font);
+  const family = fontForWork(work);
   const text = work.cards.map((c) => c.title + c.text + c.label).join('') + work.series + work.handle + work.follow + '0123456789/?제목 없음';
   const w = weightFor(family);
   try {
@@ -245,12 +290,19 @@ export async function ensureFonts(work: Work): Promise<void> {
 export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, index: number): Promise<void> {
   const card = work.cards[index];
   const H = cardHeight(work);
-  const theme = themeOf(work.theme);
-  const family = fontFor(work.theme, work.font);
+  // the version finished in Canva replaces the drawn card everywhere (preview, files, video, links)
+  const fin = work.finished;
+  if (fin?.on && fin.images[index]) {
+    const im = await loadImage(fin.images[index]);
+    if (im) { ctx.clearRect(0, 0, W, H); ctx.drawImage(im, 0, 0, W, H); return; }
+  }
+  const theme = themeOfWork(work);
+  const family = fontForWork(work);
   const bold = weightFor(family);
   const fam = `"${family}", "Noto Serif KR", serif`;
   const img = await loadImage(srcOf(card));
   const ts = H >= 1800 ? 1.22 : H >= 1400 ? 1.08 : 1; // taller cards get larger type so the text zone does not look empty
+  const sc = Math.max(0.7, Math.min(1.5, card.textScale || 1)); // the writer's size choice for this card
   const maxW = W - PAD * 2;
   const setSpacing = (px: number) => { try { (ctx as unknown as { letterSpacing: string }).letterSpacing = px + 'px'; } catch { /* older browsers */ } };
 
@@ -260,7 +312,7 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
   ctx.textAlign = 'left';
 
   if (card.kind === 'outro') {
-    renderOutro(ctx, work, card, img, { H, theme, fam, bold, ts, maxW, setSpacing, index });
+    renderOutro(ctx, work, card, img, { H, theme, fam, bold, ts, maxW, setSpacing, index, sc });
   } else {
     const isCover = card.kind === 'cover';
     const eyebrow = card.showLabel ? (isCover ? seriesLine(work) : card.label || '') : '';
@@ -273,15 +325,15 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
     const t: TextParts = { eyebrow, title, body, strong, markOnly, isCover, accent: card.accent };
 
     if (layout === 'full' && img) {
-      renderFull(ctx, work, card, img, t, { H, theme, fam, bold, ts, maxW, setSpacing, index });
+      renderFull(ctx, work, card, img, t, { H, theme, fam, bold, ts: ts * sc, maxW, setSpacing, index });
     } else if (layout === 'quote') {
-      renderQuote(ctx, card, img, t, { H, theme, fam, bold, ts, maxW, setSpacing, index });
+      renderQuote(ctx, card, img, t, { H, theme, fam, bold, ts: ts * sc, maxW, setSpacing, index });
     } else if (img) {
-      let tSize = Math.round((isCover ? 92 : 52) * ts), bSize = Math.round((isCover ? 38 : 42) * ts);
+      let tSize = Math.round((isCover ? 92 : 52) * ts * sc), bSize = Math.round((isCover ? 38 : 42) * ts * sc);
       const bLH = () => bSize * (isCover ? 1.6 : 1.68), tLH = () => tSize * 1.25;
       const measure = () => {
-        ctx.font = `${bold} ${tSize}px ${fam}`; const tl = title ? wrap(ctx, title, maxW) : [];
-        ctx.font = `400 ${bSize}px ${fam}`; const bl = body ? wrap(ctx, body, maxW) : [];
+        ctx.font = `${bold} ${tSize}px ${fam}`; const tl = title ? wrapRich(ctx, title, maxW) : [];
+        ctx.font = `400 ${bSize}px ${fam}`; const bl = body ? wrapRich(ctx, body, maxW) : [];
         const h = (eyebrow ? 64 : markOnly ? 34 : 0) + tl.length * tLH() + (tl.length && bl.length ? 22 : 0) + bl.length * bLH();
         return { tl, bl, h };
       };
@@ -294,7 +346,7 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
       drawIllustration(ctx, img, imgH, theme, card.imgPos);
       drawGrain(ctx, theme, H);
       const textTop = imgH + 40;
-      let y = textTop + Math.max(0, (textBottom - textTop - r.h) / 2);
+      let y = textTop + Math.max(0, (textBottom - textTop - r.h) * posF(card.textPos, 0.5));
       drawFrame(ctx, theme, H, textTop);
       if (eyebrow) {
         ctx.font = `500 30px ${fam}`; setSpacing(5); ctx.fillStyle = theme.accent;
@@ -309,13 +361,14 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
         ctx.fillStyle = card.accent && !isCover ? theme.accent : theme.text; ctx.font = `${bold} ${tSize}px ${fam}`;
         if (work.theme === 'neon' && isCover) { ctx.shadowColor = theme.accent; ctx.shadowBlur = 24; }
         y += tSize * 0.82;
-        for (const l of r.tl) { ctx.fillText(l, PAD, y); y += tLH(); }
+        const em = emphFor(ctx, theme);
+        for (const l of r.tl) { drawRich(ctx, l, PAD, y, em); y += tLH(); }
         ctx.shadowBlur = 0; y += (r.bl.length ? 22 : 0) - tSize * 0.82 + tLH() * 0.02;
       }
       if (r.bl.length) {
         ctx.fillStyle = isCover ? hexA(theme.text, 0.82) : theme.text; ctx.font = `400 ${bSize}px ${fam}`;
         y += bSize * 0.82;
-        for (const l of r.bl) { ctx.fillText(l, PAD, y); y += bLH(); }
+        for (const l of r.bl) { drawRich(ctx, l, PAD, y, theme.accent); y += bLH(); }
       }
     } else {
       drawGrain(ctx, theme, H);
@@ -330,26 +383,27 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
       } else if (markOnly) {
         ctx.fillStyle = theme.accent; ctx.fillRect(PAD, 172, 56, 4);
       }
-      let tSize = Math.round((isCover ? 108 : 56) * ts), bSize = Math.round((isCover ? 40 : 46) * ts);
+      let tSize = Math.round((isCover ? 108 : 56) * ts * sc), bSize = Math.round((isCover ? 40 : 46) * ts * sc);
       const fits = () => {
-        ctx.font = `${bold} ${tSize}px ${fam}`; const tl = title ? wrap(ctx, title, maxW) : [];
-        ctx.font = `400 ${bSize}px ${fam}`; const bl = body ? wrap(ctx, body, maxW) : [];
+        ctx.font = `${bold} ${tSize}px ${fam}`; const tl = title ? wrapRich(ctx, title, maxW) : [];
+        ctx.font = `400 ${bSize}px ${fam}`; const bl = body ? wrapRich(ctx, body, maxW) : [];
         return { tl, bl, h: tl.length * tSize * 1.25 + (tl.length ? 28 : 0) + bl.length * bSize * 1.7 };
       };
       const availNo = H - 380;
       let r = fits();
       while (r.h > availNo && bSize > 30) { bSize -= 2; tSize = Math.max(44, tSize - 2); r = fits(); }
-      let y = 220 + (availNo - r.h) / 2;
+      let y = 220 + (availNo - r.h) * posF(card.textPos, 0.5);
       if (r.tl.length) {
         ctx.fillStyle = card.accent && !isCover ? theme.accent : theme.text; ctx.font = `${bold} ${tSize}px ${fam}`;
         if (work.theme === 'neon' && isCover) { ctx.shadowColor = theme.accent; ctx.shadowBlur = 24; }
         y += tSize * 0.85;
-        for (const l of r.tl) { ctx.fillText(l, PAD, y); y += tSize * 1.25; }
+        const em = emphFor(ctx, theme);
+        for (const l of r.tl) { drawRich(ctx, l, PAD, y, em); y += tSize * 1.25; }
         ctx.shadowBlur = 0; y += 28 - tSize * 0.85;
       }
       ctx.fillStyle = isCover ? hexA(theme.text, 0.82) : theme.text; ctx.font = `400 ${bSize}px ${fam}`;
       y += bSize * 0.85;
-      for (const l of r.bl) { ctx.fillText(l, PAD, y); y += bSize * 1.7; }
+      for (const l of r.bl) { drawRich(ctx, l, PAD, y, theme.accent); y += bSize * 1.7; }
     }
   }
 
@@ -361,11 +415,46 @@ export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, inde
   ctx.textAlign = 'right';
   ctx.fillText(`${String(index + 1).padStart(2, '0')} / ${String(TOTAL_CARDS).padStart(2, '0')}`, W - PAD, H - 88);
   ctx.textAlign = 'left'; setSpacing(0);
+
+  await drawBrand(ctx, work, index, H, theme, fam);
+}
+
+/** The writer's logo (or handle) in a corner; bottom corners sit above the footer line. */
+async function drawBrand(ctx: CanvasRenderingContext2D, work: Work, index: number, H: number, theme: Theme, fam: string) {
+  const b = work.brand;
+  if (!b) return;
+  const card = work.cards[index];
+  if (b.scope === 'cover' && card.kind !== 'cover') return;
+  if (b.scope === 'ends' && card.kind === 'body') return;
+  const m = 56;
+  const top = b.pos[0] === 't', left = b.pos[1] === 'l';
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.15, Math.min(1, b.opacity));
+  if (b.kind === 'logo' && b.logo) {
+    const img = await loadImage(b.logo);
+    if (img) {
+      const w = Math.round((W * Math.max(4, Math.min(30, b.size))) / 100);
+      const h = Math.round((w * (img.naturalHeight || 1)) / (img.naturalWidth || 1));
+      ctx.drawImage(img, left ? m : W - m - w, top ? m : H - 130 - h, w, h);
+    }
+  } else if (work.handle) {
+    ctx.font = `600 ${Math.round(18 + b.size * 1.1)}px ${fam}`;
+    try { (ctx as unknown as { letterSpacing: string }).letterSpacing = '1px'; } catch { /* older browsers */ }
+    ctx.fillStyle = theme.text;
+    if (!theme.light) { ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 8; }
+    ctx.textAlign = left ? 'left' : 'right';
+    ctx.textBaseline = top ? 'top' : 'alphabetic';
+    ctx.fillText(work.handle, left ? m : W - m, top ? m : H - 130);
+    try { (ctx as unknown as { letterSpacing: string }).letterSpacing = '0px'; } catch { /* older browsers */ }
+  }
+  ctx.restore();
 }
 
 interface Ctx {
   H: number; theme: Theme; fam: string; bold: number; ts: number; maxW: number; index: number;
   setSpacing: (px: number) => void;
+  /** the writer's size choice (outro only; the other layouts get it folded into ts) */
+  sc?: number;
 }
 interface TextParts { eyebrow: string; title: string; body: string; strong: boolean; markOnly: boolean; isCover: boolean; accent: boolean }
 
@@ -379,24 +468,45 @@ function renderFull(ctx: CanvasRenderingContext2D, work: Work, card: Card, img: 
   let tSize = Math.round((t.isCover ? 100 : 54) * ts), bSize = Math.round((t.isCover ? 40 : 44) * ts);
   const tLH = () => tSize * 1.25, bLH = () => bSize * 1.66;
   const measure = () => {
-    ctx.font = `${bold} ${tSize}px ${fam}`; const tl = t.title ? wrap(ctx, t.title, maxW) : [];
-    ctx.font = `400 ${bSize}px ${fam}`; const bl = t.body ? wrap(ctx, t.body, maxW) : [];
+    ctx.font = `${bold} ${tSize}px ${fam}`; const tl = t.title ? wrapRich(ctx, t.title, maxW) : [];
+    ctx.font = `400 ${bSize}px ${fam}`; const bl = t.body ? wrapRich(ctx, t.body, maxW) : [];
     return { tl, bl, h: (t.eyebrow ? 64 : t.markOnly ? 34 : 0) + tl.length * tLH() + (tl.length && bl.length ? 22 : 0) + bl.length * bLH() };
   };
   let r = measure();
   while (r.h > H * 0.5 && bSize > 28) { bSize -= 2; tSize = Math.max(t.isCover ? 60 : 40, tSize - 2); r = measure(); }
-  const textBottom = H - 150;
-  const textTop = textBottom - r.h;
+  const f = posF(card.textPos, 1); // the words sit at the bottom unless the writer moved them
+  const textTop = 150 + (H - 300 - r.h) * f;
+  const textBottom = textTop + r.h;
 
-  // shade from a little above the words down to the bottom edge
-  const shadeTop = Math.max(0, textTop - Math.round(H * 0.22));
-  const g = ctx.createLinearGradient(0, shadeTop, 0, H);
+  // a shade under the words so they read on any picture
   const base = theme.light ? theme.bg[0] : theme.bg[1];
-  g.addColorStop(0, hexA(base, 0)); g.addColorStop(0.45, hexA(base, theme.light ? 0.78 : 0.72)); g.addColorStop(1, hexA(base, 0.94));
-  ctx.fillStyle = g; ctx.fillRect(0, shadeTop, W, H - shadeTop);
-  const gt = ctx.createLinearGradient(0, 0, 0, 160);
-  gt.addColorStop(0, hexA(base, 0.35)); gt.addColorStop(1, hexA(base, 0));
-  ctx.fillStyle = gt; ctx.fillRect(0, 0, W, 160);
+  const strong = theme.light ? 0.78 : 0.72;
+  if (f >= 1) {
+    const shadeTop = Math.max(0, textTop - Math.round(H * 0.22));
+    const g = ctx.createLinearGradient(0, shadeTop, 0, H);
+    g.addColorStop(0, hexA(base, 0)); g.addColorStop(0.45, hexA(base, strong)); g.addColorStop(1, hexA(base, 0.94));
+    ctx.fillStyle = g; ctx.fillRect(0, shadeTop, W, H - shadeTop);
+    const gt = ctx.createLinearGradient(0, 0, 0, 160);
+    gt.addColorStop(0, hexA(base, 0.35)); gt.addColorStop(1, hexA(base, 0));
+    ctx.fillStyle = gt; ctx.fillRect(0, 0, W, 160);
+  } else if (f <= 0) {
+    const shadeBottom = Math.min(H, textBottom + Math.round(H * 0.22));
+    const g = ctx.createLinearGradient(0, 0, 0, shadeBottom);
+    g.addColorStop(0, hexA(base, 0.94)); g.addColorStop(0.55, hexA(base, strong)); g.addColorStop(1, hexA(base, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, shadeBottom);
+    const gb = ctx.createLinearGradient(0, H - 200, 0, H);
+    gb.addColorStop(0, hexA(base, 0)); gb.addColorStop(1, hexA(base, 0.5));
+    ctx.fillStyle = gb; ctx.fillRect(0, H - 200, W, 200);
+  } else {
+    const a = Math.max(0, textTop - Math.round(H * 0.18)), b = Math.min(H, textBottom + Math.round(H * 0.18));
+    const g = ctx.createLinearGradient(0, a, 0, b);
+    g.addColorStop(0, hexA(base, 0)); g.addColorStop((textTop - a) / (b - a), hexA(base, strong));
+    g.addColorStop((textBottom - a) / (b - a), hexA(base, strong)); g.addColorStop(1, hexA(base, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, a, W, b - a);
+    const gb = ctx.createLinearGradient(0, H - 200, 0, H);
+    gb.addColorStop(0, hexA(base, 0)); gb.addColorStop(1, hexA(base, 0.5));
+    ctx.fillStyle = gb; ctx.fillRect(0, H - 200, W, 200);
+  }
   drawGrain(ctx, theme, H);
   drawFrame(ctx, theme, H, textTop);
 
@@ -415,14 +525,15 @@ function renderFull(ctx: CanvasRenderingContext2D, work: Work, card: Card, img: 
     ctx.fillStyle = t.accent && !t.isCover ? theme.accent : theme.text; ctx.font = `${bold} ${tSize}px ${fam}`;
     if (work.theme === 'neon' && t.isCover) { ctx.shadowColor = theme.accent; ctx.shadowBlur = 24; }
     y += tSize * 0.82;
-    for (const l of r.tl) { ctx.fillText(l, PAD, y); y += tLH(); }
+    const em = emphFor(ctx, theme);
+    for (const l of r.tl) { drawRich(ctx, l, PAD, y, em); y += tLH(); }
     if (!theme.light) { ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 14; } else ctx.shadowBlur = 0;
     y += (r.bl.length ? 22 : 0) - tSize * 0.82 + tLH() * 0.02;
   }
   if (r.bl.length) {
     ctx.fillStyle = t.isCover ? hexA(theme.text, 0.86) : theme.text; ctx.font = `400 ${bSize}px ${fam}`;
     y += bSize * 0.82;
-    for (const l of r.bl) { ctx.fillText(l, PAD, y); y += bLH(); }
+    for (const l of r.bl) { drawRich(ctx, l, PAD, y, theme.accent); y += bLH(); }
   }
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 }
@@ -452,13 +563,13 @@ function renderQuote(ctx: CanvasRenderingContext2D, card: Card, img: HTMLImageEl
   let qSize = Math.round(60 * ts);
   const qLH = () => qSize * 1.55;
   ctx.textAlign = 'center';
-  const measure = () => { ctx.font = `${bold} ${qSize}px ${fam}`; return line ? wrap(ctx, line, qW) : []; };
+  const measure = () => { ctx.font = `${bold} ${qSize}px ${fam}`; return line ? wrapRich(ctx, line, qW) : []; };
   let ql = measure();
   const sH = speaker ? 34 * ts * 1.6 + 30 : 0;
   const avail = H - 420;
   while (ql.length * qLH() + sH > avail && qSize > 34) { qSize -= 2; ql = measure(); }
   const blockH = ql.length * qLH() + sH;
-  let y = 240 + Math.max(0, (avail - blockH) / 2);
+  let y = 240 + Math.max(0, (avail - blockH) * posF(card.textPos, 0.5));
 
   // a large opening mark above the words
   ctx.save();
@@ -469,7 +580,8 @@ function renderQuote(ctx: CanvasRenderingContext2D, card: Card, img: HTMLImageEl
 
   ctx.fillStyle = t.accent ? theme.accent : theme.text; ctx.font = `${bold} ${qSize}px ${fam}`;
   y += qSize * 0.85;
-  for (const l of ql) { ctx.fillText(l, W / 2, y); y += qLH(); }
+  const em = emphFor(ctx, theme);
+  for (const l of ql) { drawRich(ctx, l, W / 2, y, em); y += qLH(); }
   y -= qSize * 0.85;
   if (speaker) {
     ctx.fillStyle = hexA(theme.text, 0.7); ctx.font = `500 ${Math.round(34 * ts)}px ${fam}`; setSpacing(2);
@@ -521,11 +633,11 @@ function renderOutro(ctx: CanvasRenderingContext2D, work: Work, card: Card, img:
   const blockH = (fl.length ? fl.length * fSize * 1.5 : 0) + (hl.length ? hl.length * hSize * 1.25 + 12 : 0);
 
   // add-on line above it, shrunk until it fits
-  let aSize = Math.round(46 * ts);
+  let aSize = Math.round(46 * ts * (c.sc || 1));
   const room = () => bottom - blockH - 72 - top;
   ctx.font = `400 ${aSize}px ${fam}`;
-  let al = addon ? wrap(ctx, addon, maxW) : [];
-  while (addon && al.length * aSize * 1.7 > room() && aSize > 30) { aSize -= 2; ctx.font = `400 ${aSize}px ${fam}`; al = wrap(ctx, addon, maxW); }
+  let al = addon ? wrapRich(ctx, addon, maxW) : [];
+  while (addon && al.length * aSize * 1.7 > room() && aSize > 30) { aSize -= 2; ctx.font = `400 ${aSize}px ${fam}`; al = wrapRich(ctx, addon, maxW); }
   const aH = al.length * aSize * 1.7;
 
   let blockTop: number;
@@ -533,7 +645,7 @@ function renderOutro(ctx: CanvasRenderingContext2D, work: Work, card: Card, img:
     let y = top + Math.max(0, (room() - aH) / 2);
     ctx.fillStyle = theme.text; ctx.font = `400 ${aSize}px ${fam}`;
     y += aSize * 0.85;
-    for (const l of al) { ctx.fillText(l, PAD, y); y += aSize * 1.7; }
+    for (const l of al) { drawRich(ctx, l, PAD, y, theme.accent); y += aSize * 1.7; }
     blockTop = bottom - blockH;
   } else {
     blockTop = top + Math.max(0, (bottom - top - blockH) / 2);

@@ -1,6 +1,7 @@
 // What the feature modules (review, Instagram preview, Drive, share links) may ask of the app controller.
 import type { ImageAI, TextAI } from './ai/compose';
 import type { Work } from './model';
+import type { Settings } from './settings';
 
 export interface App {
   work(): Work;
@@ -17,4 +18,10 @@ export interface App {
   imageAI(): ImageAI | null;
   openSettings(): void;
   online(): boolean;
+  /** index of the card shown in the preview */
+  current(): number;
+  settings(): Settings;
+  saveSettings(): Promise<void>;
+  /** redraws the look panel (ratio, themes, font, series, watermark) */
+  renderLook(): void;
 }

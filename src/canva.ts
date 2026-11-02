@@ -15,6 +15,13 @@ export const CANVA_MESSAGES: Record<string, string> = {
   job_timeout: 'Canva가 응답하는 데 너무 오래 걸려요. 잠시 뒤 다시 해 주세요.',
   too_many_requests: 'Canva 요청이 너무 잦아요. 잠시 뒤 다시 해 주세요.',
   network: '인터넷 연결을 확인해 주세요.',
+  blob_not_configured: '서버에 파일 저장소가 설정되지 않았어요.',
+  invalid_file: 'Canva가 카드 파일을 읽지 못했어요.',
+  fetch_failed: 'Canva가 카드 파일을 내려받지 못했어요. 다시 해 주세요.',
+  import_failed: 'Canva로 가져오지 못했어요. 다시 해 주세요.',
+  design_import_throttled: 'Canva 가져오기 요청이 많아요. 잠시 뒤 다시 해 주세요.',
+  design_import_already_in_progress: '이미 가져오는 중이에요. 잠시 뒤 다시 해 주세요.',
+  download_failed: 'Canva에서 마감본 페이지를 받지 못했어요.',
 };
 export const canvaMessage = (e: unknown): string => {
   const code = e instanceof CanvaError ? e.code : 'network';
@@ -23,7 +30,7 @@ export const canvaMessage = (e: unknown): string => {
 
 const API = '/api/canva';
 
-async function call(path: string, init?: RequestInit): Promise<Response> {
+export async function call(path: string, init?: RequestInit): Promise<Response> {
   let res: Response;
   try { res = await fetch(API + path, { credentials: 'same-origin', ...init }); } catch { throw new CanvaError('network'); }
   if (res.status === 404 || (res.headers.get('content-type') || '').includes('text/html')) throw new CanvaError('unavailable');

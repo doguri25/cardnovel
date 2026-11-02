@@ -1,10 +1,11 @@
 import './styles.css';
-import { aiMessage, AiError, listModels, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
+import { aiMessage, AiError, listModels, onUsage, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
 import { compose, drawCard, drawCharacterSheet, rewriteCard, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
+import { adoptBible, bibleText, loadBible } from './bible';
 import {
-  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, workTitle,
-  type Card, type CardLayout, type ImageProvider, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
+  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, workTitle,
+  type Card, type CardLayout, type ImageProvider, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
 import { artHeight, cardHeight, ensureFonts, layoutOf, renderCard, srcOf, W } from './render';
@@ -16,6 +17,12 @@ import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, 
 import type { App } from './app';
 import { renderReview, wireReview } from './ui/review';
 import { openInstaPreview } from './ui/insta';
+import { openCoverCandidates } from './ui/cover';
+import { openBible } from './ui/bible';
+import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
+import { brandHint, openBrandEditor, openThemeEditor, setBrandOn } from './ui/look';
+import { monthTotal, onUsageEvent, openUsage, renderUsagePill } from './ui/usage';
+import { money } from './usage';
 import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
 import { afterLocalSave, renderDriveBox, type DriveDeps } from './ui/drive';
@@ -57,8 +64,13 @@ const app: App = {
   imageAI: () => imageAI(),
   openSettings: () => openSettings(),
   online: () => online(),
+  current: () => current,
+  settings: () => settings,
+  saveSettings: () => saveSettings(settings),
+  renderLook: () => renderLook(),
 };
 const shareDeps: ShareDeps = { key: () => settings.shareKey };
+const finishDeps: FinishDeps = { login: () => goCanvaLogin(), refreshAll: () => { buildCardList(); scheduleRender(); } };
 const driveDeps: DriveDeps = { clientId: () => settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID, defaults: () => defaults(), reopenLibrary: () => void openLibrary() };
 let reviewTimer = 0;
 const scheduleReview = () => { clearTimeout(reviewTimer); reviewTimer = window.setTimeout(() => renderReview(app), 700); };
@@ -300,11 +312,14 @@ function cardRowHTML(card: Card, i: number): string {
       <div class="pic ${src ? '' : 'empty'} ${busy ? 'busy' : ''}">${src ? `<img alt="" src="${src}">` : isOutro ? '그림 없어도 됨' : '그림 없음'}${src && card.imgSource ? `<span class="src">${esc(IMG_NAME[card.imgSource])}</span>` : ''}</div>
       <div class="picbtns">
         ${canAI ? `<button class="btn tiny tonal" type="button" data-act="ai" ${busy || !online() ? 'disabled' : ''}>${src ? '다시' : 'AI 그림'}</button>` : ''}
+        ${canAI && isCover ? `<button class="btn tiny" type="button" data-act="coverCands" ${busy || !online() ? 'disabled' : ''}>후보 3장</button>` : ''}
         ${p === 'canva' ? `<button class="btn tiny tonal" type="button" data-act="canva" ${busy || !online() ? 'disabled' : ''}>${src ? 'Canva에서 고치기' : 'Canva에서 그리기'}</button>` : ''}
         ${p === 'canva' && card.canvaDesignId ? `<button class="btn tiny" type="button" data-act="canvaImport" ${busy || !online() ? 'disabled' : ''}>Canva에서 가져오기</button>` : ''}
         <button class="btn tiny" type="button" data-act="upload">올리기</button>
         ${src ? '<button class="btn tiny" type="button" data-act="clear">지움</button>' : ''}
         ${layouts.length ? `<select class="input pos" data-f="layout" aria-label="카드 배치">${layouts.map((l) => `<option value="${l}" ${l === layout ? 'selected' : ''}>배치 · ${LAYOUT_NAME[l]}</option>`).join('')}</select>` : ''}
+        <select class="input pos" data-f="textScale" aria-label="글자 크기">${TEXT_SCALES.map((t) => `<option value="${t.value}" ${t.value === (card.textScale || 1) ? 'selected' : ''}>글자 · ${t.name}</option>`).join('')}</select>
+        ${!isOutro ? `<select class="input pos" data-f="textPos" aria-label="글 위치">${(Object.keys(TEXT_POS_NAME) as TextPos[]).map((k) => `<option value="${k}" ${k === (card.textPos || 'auto') ? 'selected' : ''}>글 위치 · ${TEXT_POS_NAME[k]}</option>`).join('')}</select>` : ''}
         ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>자르기 · 위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>자르기 · 가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>자르기 · 아래</option></select>` : ''}
       </div>
     </div>
@@ -318,7 +333,7 @@ function cardRowHTML(card: Card, i: number): string {
         <button class="btn small" type="button" data-act="rewrite" ${!online() || (isOutro && work.outroKind === 'none') ? 'disabled' : ''}>${isCover ? '훅 다시' : '다시 쓰기'}</button>
       </div>
       ${isBody ? `<input class="input" data-f="title" placeholder="${layout === 'quote' ? '말한 사람 (선택, 예: 지수)' : '소제목 (선택)'}" value="${esc(card.title)}">` : ''}
-      ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문'}">${esc(card.text)}</textarea>`}
+      ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문 · *별표*로 감싼 말은 강조색'}">${esc(card.text)}</textarea>`}
       ${isOutro ? `<div class="fixed">고정: ${esc([work.follow, work.handle].filter(Boolean).join(' · ') || '오른쪽 칸에서 팔로우 문구와 핸들을 넣으세요')}</div>` : ''}
       <div class="meta"><span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span><span class="count"></span></div>
     </div>`;
@@ -397,6 +412,8 @@ function wireCardList() {
     const card = work.cards[i];
     if (f === 'outroKind') { void changeOutroKind(el.value as OutroKind); return; }
     if (f === 'imgPos') { card.imgPos = el.value as Card['imgPos']; save(); scheduleRender(); return; }
+    if (f === 'textScale') { const v = Number(el.value); if (v === 1) delete card.textScale; else card.textScale = v; save(); scheduleRender(); return; }
+    if (f === 'textPos') { if (el.value === 'auto') delete card.textPos; else card.textPos = el.value as TextPos; save(); scheduleRender(); return; }
     if (f === 'layout') {
       const before = layoutOf(card);
       card.layout = el.value as CardLayout;
@@ -438,6 +455,9 @@ async function onCardAction(act: string, i: number) {
     if (card.canvaDesignId) await importFromCanva(i, card.canvaDesignId);
   } else if (act === 'ai') {
     await drawOne(i);
+  } else if (act === 'coverCands') {
+    const p = work.imageAI.provider as 'gemini' | 'openai' | 'claude';
+    await openCoverCandidates(app, () => cardRefs(0), IMG_NAME[p], settings.prices[p] ?? 0, () => { refreshRow(0); });
   } else if (act === 'rewrite') {
     await rewrite(i);
   }
@@ -540,8 +560,13 @@ async function drawAll() {
     targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
   }
   const price = settings.prices[ai.provider] ?? 0;
+  const spent = await monthTotal(app);
   const ok = await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${(price * targets.length).toFixed(2)}예요.`, {
-    ok: '그리기', detail: ['장당 단가는 설정에서 고칠 수 있어요.', ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.'],
+    ok: '그리기', detail: [
+      `이번 달 지금까지 추정 ${money(spent)}${settings.monthlyBudget ? ` (예산 ${money(settings.monthlyBudget)})` : ''}.`,
+      '장당 단가는 설정에서 고칠 수 있어요.',
+      ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
+    ],
   });
   if (!ok) return;
   artCtl = new AbortController();
@@ -621,7 +646,8 @@ async function runCompose() {
   setStatus(st, ai ? `${PROVIDER_NAME[ai.provider]}가 20장을 구성하는 중… (보통 20초~1분)` : '원고를 카드에 앉히는 중…', 'busy');
   try {
     const seriesCtx = ai ? await seriesContext(ai, composeCtl.signal) : undefined;
-    if (seriesCtx) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 앞 회 ${seriesCtx.previous.length}편을 이어 ${work.episode}화 20장을 구성하는 중…`, 'busy');
+    if (seriesCtx?.previous.length) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 앞 회 ${seriesCtx.previous.length}편을 이어 ${work.episode}화 20장을 구성하는 중…`, 'busy');
+    else if (seriesCtx?.bible) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 시리즈 설정집을 지키며 20장을 구성하는 중…`, 'busy');
     const draft: Work = JSON.parse(JSON.stringify(work));
     const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split, seriesCtx);
     if (r.mode === 'split' || r.usedAI) {
@@ -649,15 +675,16 @@ async function runCompose() {
 
 /** Episode 2 and later: the earlier episodes' summaries (written now where missing) go to the writer. */
 async function seriesContext(ai: TextAI, signal: AbortSignal): Promise<SeriesContext | undefined> {
-  if (!work.episode || work.episode < 2 || !seriesName(work)) return undefined;
-  const prev = previousEpisodes(await works.all(), work);
-  if (!prev.length) return undefined;
+  if (!seriesName(work)) return undefined;
+  const bible = bibleText(await loadBible(work.series));
+  const prev = work.episode && work.episode >= 2 ? previousEpisodes(await works.all(), work) : [];
+  if (!prev.length) return bible ? { previous: [], bible } : undefined;
   for (const p of prev) {
     if (p.summary?.trim() || !p.cards.some((c) => c.text.trim())) continue;
     setStatus($('composeStatus'), `${p.episode}화 줄거리를 정리하는 중…`, 'busy');
     try { p.summary = await summarize(p, ai, signal); await works.put(p); } catch (e) { if ((e as AiError)?.code === 'cancelled') throw e; }
   }
-  return { previous: prev.map(asPrev), keepStyle: prev[prev.length - 1].style.prompt === work.style.prompt };
+  return { previous: prev.map(asPrev), keepStyle: prev[prev.length - 1].style.prompt === work.style.prompt, bible };
 }
 
 /** Starts the next episode of `fromId`'s series with the same look, art style and character picture. */
@@ -729,10 +756,17 @@ function renderLook() {
   document.querySelectorAll<HTMLButtonElement>('#ratioSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === work.ratio));
   $('ratioHint').textContent = r.hint + (r.instagramApi ? '' : ' · 인스타 API 직접 게시는 1:1·4:5만 돼요(공유는 가능).');
   $('sizeTag').textContent = `카드 20장 · 1080×${r.h}`;
-  $('themes').innerHTML = (Object.keys(THEMES) as ThemeKey[]).map((k) => {
-    const t = THEMES[k];
-    return `<button type="button" class="theme ${k === work.theme ? 'active' : ''}" data-k="${k}" style="--sw-accent:${t.accent}"><span class="swatch" style="background:linear-gradient(135deg, ${t.bg[0]}, ${t.bg[1]})"></span>${t.name}</button>`;
-  }).join('');
+  const swatch = (t: { bg: [string, string]; accent: string; name: string }, attrs: string, active: boolean, mine = false) =>
+    `<button type="button" class="theme ${active ? 'active' : ''} ${mine ? 'mine' : ''}" ${attrs} style="--sw-accent:${t.accent}"><span class="swatch" style="background:linear-gradient(135deg, ${t.bg[0]}, ${t.bg[1]})"></span>${esc(t.name)}</button>`;
+  const customId = work.theme === 'custom' ? work.customTheme?.id : undefined;
+  const saved = settings.customThemes;
+  // a work may carry a custom theme that is not (or no longer) in this device's list: show it too
+  const extra = work.theme === 'custom' && work.customTheme && !saved.some((t) => t.id === customId) ? [work.customTheme] : [];
+  $('themes').innerHTML = (Object.keys(THEMES) as ThemeKey[]).map((k) => swatch(THEMES[k], `data-k="${k}"`, k === work.theme)).join('')
+    + [...saved, ...extra].map((t) => swatch(t, `data-c="${esc(t.id)}" title="내 테마"`, t.id === customId, true)).join('');
+  $('btnThemeEdit').hidden = !(customId && saved.some((t) => t.id === customId));
+  $<HTMLInputElement>('brandOn').checked = !!work.brand;
+  $('brandHint').textContent = brandHint(work) || '카드 구석에 로고나 핸들을 넣어요.';
   $<HTMLSelectElement>('font').innerHTML = FONT_CHOICES.map((f) => `<option value="${esc(f.value)}" ${f.value === work.font ? 'selected' : ''}>${esc(f.label)}</option>`).join('');
   $<HTMLInputElement>('series').value = work.series;
   $<HTMLInputElement>('episode').value = work.episode ? String(work.episode) : '';
@@ -746,6 +780,7 @@ function renderAllUI() {
   renderLook();
   buildCardList();
   renderReview(app);
+  renderFinishBox(app);
   void renderTextAI();
   void renderImageAI();
   scheduleRender();
@@ -959,6 +994,7 @@ async function openLibrary() {
 }
 
 async function openWork(w: Work) {
+  await adoptBible(w);
   work = normalizeWork(w, defaults());
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   await kv.set('currentId', work.id);
@@ -1024,12 +1060,15 @@ async function share() {
 /* ================= wiring ================= */
 function wire() {
   $('btnLibrary').addEventListener('click', () => void openLibrary());
+  $('btnUsage').addEventListener('click', () => void openUsage(app));
   $('btnSettings').addEventListener('click', openSettings);
   $('btnCaption').addEventListener('click', () => void copyCaption());
   $('btnSaveAll').addEventListener('click', () => void saveAll());
   $('btnSaveOne').addEventListener('click', () => void saveOne());
   $('btnShare').addEventListener('click', () => void share());
   $('btnInsta').addEventListener('click', () => void openInstaPreview(app));
+  // the video encoder is loaded only when it is used
+  $('btnReels').addEventListener('click', () => void import('./ui/reels').then((m) => m.openReels(app)).catch(() => toast('영상 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.')));
   $('btnShareLink').addEventListener('click', () => void makeShareLink(app, shareDeps, $<HTMLButtonElement>('btnShareLink')));
   $('btnShareList').addEventListener('click', () => void openShareList(app, shareDeps));
   $('btnUndo').addEventListener('click', undo);
@@ -1111,6 +1150,7 @@ function wire() {
   $('libFile').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void importFile(f); });
   wireCardList();
   wireReview(app);
+  wireFinishBox(app, finishDeps);
 
   // look
   $('ratioSeg').addEventListener('click', (e) => {
@@ -1120,11 +1160,23 @@ function wire() {
     save(); renderLook(); buildCardList(); scheduleRender();
   });
   $('themes').addEventListener('click', (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-k]');
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-k], button[data-c]');
     if (!b) return;
-    work.theme = b.dataset.k as ThemeKey;
+    if (b.dataset.k) {
+      work.theme = b.dataset.k as ThemeKey;
+      delete work.customTheme;
+    } else {
+      const t = settings.customThemes.find((x) => x.id === b.dataset.c) ?? (work.customTheme?.id === b.dataset.c ? work.customTheme : undefined);
+      if (!t) return;
+      work.theme = 'custom';
+      work.customTheme = { ...t, bg: [...t.bg] as [string, string] };
+    }
     save(); renderLook(); scheduleRender();
   });
+  $('btnThemeNew').addEventListener('click', () => openThemeEditor(app));
+  $('btnThemeEdit').addEventListener('click', () => openThemeEditor(app, work.customTheme?.id));
+  $('brandOn').addEventListener('change', () => setBrandOn(app, $<HTMLInputElement>('brandOn').checked));
+  $('btnBrand').addEventListener('click', () => openBrandEditor(app));
   $('font').addEventListener('change', () => { work.font = $<HTMLSelectElement>('font').value; save(); scheduleRender(); });
   $('episode').addEventListener('input', () => {
     const n = parseInt($<HTMLInputElement>('episode').value, 10);
@@ -1132,6 +1184,7 @@ function wire() {
     save(); scheduleRender();
   });
   $('btnNextEpisode').addEventListener('click', () => void startNextEpisode(work.id));
+  $('btnBible').addEventListener('click', () => void openBible(app));
   for (const f of ['series', 'handle', 'follow'] as const) {
     $(f).addEventListener('input', () => { work[f] = $<HTMLInputElement>(f).value; save(); renderStoryPanel(); refreshRow(TOTAL_CARDS - 1); scheduleRender(); });
   }
@@ -1293,6 +1346,11 @@ async function handleCanvaLanding() {
     const other = await works.get(target.workId);
     if (other) { work = normalizeWork(other, defaults()); current = 0; await kv.set('currentId', work.id); renderAllUI(); }
   }
+  if (target?.cardId === 'finish' && l.design) {
+    $('finishBox').scrollIntoView({ block: 'center' });
+    await pullFinished(app, finishDeps, l.design);
+    return;
+  }
   let i = target ? work.cards.findIndex((c) => c.id === target.cardId) : -1;
   if (i < 0 && l.design) i = work.cards.findIndex((c) => c.canvaDesignId === l.design);
   if (i < 0 || !l.design) { toast('Canva 그림이 어느 카드 것인지 찾지 못했어요.'); return; }
@@ -1309,6 +1367,8 @@ async function start() {
   work = saved ? normalizeWork(saved, defaults()) : newWork(defaults());
   if (!saved) await works.put(work);
   wire();
+  onUsage((u) => void onUsageEvent(app, u));
+  void renderUsagePill(app);
   $('offlinePill').hidden = online();
   renderAllUI();
   $('savedAt').textContent = saved ? `불러옴 · ${fmtDate(saved.updatedAt)}` : '';

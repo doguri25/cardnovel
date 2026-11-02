@@ -102,7 +102,21 @@ cd desktop && npm install && npm start
 | 공유 링크 | 위 「공유 링크 설정」 참고. 만든 링크 목록·복사·지우기 |
 | 구글 드라이브 | 위 「구글 드라이브 백업 설정」 참고. 이 작품 백업·모두 백업·불러오기·저장할 때 자동 백업 |
 
-아직 없는 것: Canva 완성 카드 마감(P1-1), 인스타 API 직접 게시(P1-3), 비용 기록(P1-5).
+### 세 번째로 넣은 것
+
+| 기능 | 내용 |
+| --- | --- |
+| 릴스 영상 | 20장을 1080×1920 영상으로(장당 시간 자동/고정, 밀기·서서히 넘김, 천천히 확대, 배경음 반복·페이드). 브라우저 안에서 WebCodecs로 만들어 비용 없음. MP4(H.264)가 안 되는 브라우저는 WebM으로 만들고 알려 줌 |
+| 사용량·비용 | AI 호출마다 토큰·그림 수를 기록해 이번 달 추정 비용을 앱 위쪽에 표시. 용도·회사·작품별 합계, 월 예산 80%·100% 알림, 글 AI 단가 표, CSV |
+| 표지 후보 | 표지 그림을 구도 3가지(핵심 사물·무대 전경·인물 뒷모습)로 그려 완성 표지 모습으로 비교해 고름 |
+| 글자 세부 조정 | `*말*`로 감싼 부분은 강조색, 카드마다 글자 크기(작게~아주 크게)·글 위치(위·가운데·아래) |
+| 내 테마·워터마크 | 배경 두 색·글자·강조색·서체·장식으로 테마를 만들어 저장(대비 경고, 미리보기). 로고 그림이나 핸들 글자를 카드 구석에(위치·크기·진하기·넣을 카드) |
+| 시리즈 설정집 | 인물·장소·바뀌면 안 되는 사실·떡밥(풂/안 풂)을 시리즈마다 저장. AI로 채우기, 이번 회 설정 충돌 검사와 「이 문장으로 바꾸기」. 카드 구성 때 AI에 함께 보냄 |
+| Canva 마감 | 20장을 「배경 그림 + 살아 있는 글자 상자」 파워포인트로 만들어 Canva로 가져가(URL 가져오기) 손본 뒤, 돌아가기(Return)를 누르면 20쪽을 받아 마감본으로 씀. 마감본은 미리보기·ZIP·공유·영상·링크 모두에 쓰이고 끌 수 있음 |
+
+Canva 마감은 `api/canva/finish-upload`(파일을 Vercel Blob에 바로 올리는 토큰), `finish-import`(Canva URL 가져오기, 끝나면 올린 파일 삭제), `finish-export`(쪽마다 JPG), `page`(내보낸 쪽 전달)를 쓴다. Canva가 글꼴을 바꾸거나 글 상자 위치가 조금 달라질 수 있어 Canva에서 한 번 확인하는 단계로 쓴다.
+
+아직 없는 것: 인스타 API 직접 게시(P1-3).
 
 ## 구조
 
@@ -123,8 +137,13 @@ src/
   share.ts         공유 링크 (브라우저 쪽: 올리기·목록·지우기)
   drive.ts         구글 드라이브 (로그인, 폴더, 이어 올리기, 불러오기)
   ai/review.ts     AI 평가 스키마·프롬프트·정리
-  ui/              평가 패널, 인스타 미리보기, 공유 링크, 드라이브 화면
-api/canva/         Canva 서버리스 함수: login, callback, status, logout, design, export, return
+  reels.ts         릴스 영상 (WebCodecs + mediabunny, MP4/WebM)
+  usage.ts         사용량·비용 기록
+  bible.ts         시리즈 설정집
+  canva-finish.ts  Canva 마감: 글자를 따로 뽑은 파워포인트 만들기, 마감본 받기
+  ai/bible.ts      설정집 AI 채우기·충돌 검사
+  ui/              평가, 인스타 미리보기, 공유 링크, 드라이브, 내 테마·워터마크, 표지 후보, 사용량, 설정집, 릴스, Canva 마감 화면
+api/canva/         Canva 서버리스 함수: login, callback, status, logout, design, export, return, finish-upload, finish-import, finish-export, page
 api/share/         공유 링크 함수: status, upload, create, delete, page(/s/<id> 뷰어)
 api/_lib/canva.ts  토큰 쿠키 암호화, PKCE, Canva API 호출, 돌아오기 서명 검증
 api/_lib/share.ts  공유 열쇠 확인, 목록 검사, 뷰어 HTML

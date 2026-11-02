@@ -1,4 +1,5 @@
-import { DEFAULTS, type ImageProvider, type TextProvider } from './model';
+import { DEFAULT_BRAND, DEFAULTS, type Brand, type ImageProvider, type TextProvider } from './model';
+import type { SavedTheme } from './themes';
 import { kv } from './store';
 
 export interface Keys { anthropic: string; google: string; openai: string }
@@ -20,6 +21,14 @@ export interface Settings {
   shareKey: string;
   /** Google OAuth client ID for Drive backup (empty: the build's default, if any) */
   googleClientId: string;
+  /** the writer's own themes, offered next to the built-in ones */
+  customThemes: SavedTheme[];
+  /** logo / handle watermark settings, copied into a work when switched on */
+  brand: Brand;
+  /** estimated text prices in USD per 1M tokens (input, output), editable because they change */
+  textPrices: Record<'anthropic' | 'google' | 'openai', { in: number; out: number }>;
+  /** monthly spending limit in USD for warnings; 0 = none */
+  monthlyBudget: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -34,6 +43,10 @@ export const DEFAULT_SETTINGS: Settings = {
   claudeArtTier: 'quick',
   shareKey: '',
   googleClientId: '',
+  customThemes: [],
+  brand: { ...DEFAULT_BRAND },
+  textPrices: { anthropic: { in: 3, out: 15 }, google: { in: 0.3, out: 2.5 }, openai: { in: 1.25, out: 10 } },
+  monthlyBudget: 0,
 };
 
 export async function loadSettings(): Promise<Settings> {
@@ -46,6 +59,14 @@ export async function loadSettings(): Promise<Settings> {
     prices: { ...DEFAULT_SETTINGS.prices, ...(s.prices ?? {}) },
     textAI: { ...DEFAULT_SETTINGS.textAI, ...(s.textAI ?? {}) },
     imageAI: { ...DEFAULT_SETTINGS.imageAI, ...(s.imageAI ?? {}) },
+    customThemes: Array.isArray(s.customThemes) ? s.customThemes : [],
+    brand: { ...DEFAULT_BRAND, ...(s.brand ?? {}) },
+    textPrices: {
+      anthropic: { ...DEFAULT_SETTINGS.textPrices.anthropic, ...(s.textPrices?.anthropic ?? {}) },
+      google: { ...DEFAULT_SETTINGS.textPrices.google, ...(s.textPrices?.google ?? {}) },
+      openai: { ...DEFAULT_SETTINGS.textPrices.openai, ...(s.textPrices?.openai ?? {}) },
+    },
+    monthlyBudget: Number(s.monthlyBudget) || 0,
   };
 }
 

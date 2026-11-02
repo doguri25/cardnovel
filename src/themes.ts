@@ -49,4 +49,28 @@ export const FONT_CHOICES: { value: string; label: string }[] = [
 ];
 
 export const fontFor = (themeKey: string, font: string): string => (font && font !== 'auto' ? font : themeOf(themeKey).font);
+
+/* ---------- the writer's own themes ---------- */
+export interface SavedTheme extends Theme { id: string }
+export const DECO_NAME: Record<Deco, string> = { glow: '은은한 빛', frame: '테두리', number: '큰 숫자', bar: '빛나는 막대', corners: '모서리', panel: '만화 칸' };
+
+/** The theme a work is drawn with: its own saved theme (a copy kept in the work) or a built-in one. */
+export const themeOfWork = (w: { theme: string; customTheme?: Theme }): Theme =>
+  w.theme === 'custom' && w.customTheme ? w.customTheme : themeOf(w.theme);
+export const fontForWork = (w: { theme: string; font: string; customTheme?: Theme }): string =>
+  w.font && w.font !== 'auto' ? w.font : themeOfWork(w).font;
+
+const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+/** WCAG relative luminance of a #rrggbb colour. */
+export function luminance(hex: string): number {
+  const [r, g, b] = [0, 1, 2].map((i) => { const c = channel(hex, i); return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+export const contrast = (a: string, b: string): number => {
+  const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+  return (x + 0.05) / (y + 0.05);
+};
+/** A light background gets the light-theme treatment (softer grain and vignette, dark shade colours). */
+export const isLightBg = (bg: [string, string]): boolean => (luminance(bg[0]) + luminance(bg[1])) / 2 > 0.4;
+export const isHex = (s: string): boolean => /^#[0-9a-fA-F]{6}$/.test(s);
 export const weightFor = (family: string): number => (family === 'Nanum Myeongjo' ? 800 : 700);

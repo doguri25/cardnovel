@@ -29,6 +29,29 @@ export const aiMessage = (e: unknown): string => {
   return AI_MESSAGES.upstream;
 };
 
+/* ================= usage (tokens and pictures per call) ================= */
+export type UsageTag = 'compose' | 'rewrite' | 'outro' | 'summary' | 'review' | 'bible' | 'svg' | 'image' | 'refsheet' | 'cover' | 'other';
+export interface UsageEvent {
+  provider: TextProvider;
+  model: string;
+  /** what the call was for (구성, 평가, 그림 …) */
+  tag: UsageTag;
+  input: number;
+  output: number;
+  images: number;
+}
+let usageSink: ((u: UsageEvent) => void) | null = null;
+/** The app records every successful call through this (tokens, pictures), to show spending. */
+export const onUsage = (fn: ((u: UsageEvent) => void) | null): void => { usageSink = fn; };
+const report = (u: UsageEvent) => { try { usageSink?.(u); } catch { /* recording must never break a call */ } };
+const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+type AnthropicUsage = { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
+type OpenAIUsage = { usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number } };
+type GeminiUsage = { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } };
+const anthropicUse = (r: AnthropicUsage) => ({ input: n(r.usage?.input_tokens) + n(r.usage?.cache_creation_input_tokens) + n(r.usage?.cache_read_input_tokens), output: n(r.usage?.output_tokens) });
+const openaiUse = (r: OpenAIUsage) => ({ input: n(r.usage?.prompt_tokens) || n(r.usage?.input_tokens), output: n(r.usage?.completion_tokens) || n(r.usage?.output_tokens) });
+const geminiUse = (r: GeminiUsage) => ({ input: n(r.usageMetadata?.promptTokenCount), output: n(r.usageMetadata?.candidatesTokenCount) + n(r.usageMetadata?.thoughtsTokenCount) });
+
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((res, rej) => {
   const t = setTimeout(res, ms);
   signal?.addEventListener('abort', () => { clearTimeout(t); rej(new AiError('cancelled')); }, { once: true });
@@ -158,17 +181,20 @@ export interface TextRequest {
   schema?: Record<string, unknown>;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** what the call is for, for the usage record */
+  tag?: UsageTag;
 }
 
 export async function generateText(req: TextRequest): Promise<string> {
-  const { provider, key, model, system, prompt, maxTokens = 16000, signal } = req;
+  const { provider, key, model, system, prompt, maxTokens = 16000, signal, tag = 'other' } = req;
   if (!key) throw new AiError('no_key');
   if (!model) throw new AiError('bad_request', '모델을 골라 주세요');
   if (provider === 'anthropic') {
     const r = (await call(`${ANTHROPIC}/messages`, {
       method: 'POST', headers: anthropicHeaders(key),
       body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: prompt }] }),
-    }, signal)) as { content?: { type: string; text?: string }[]; stop_reason?: string };
+    }, signal)) as { content?: { type: string; text?: string }[]; stop_reason?: string } & AnthropicUsage;
+    report({ provider, model, tag, images: 0, ...anthropicUse(r) });
     if (r.stop_reason === 'refusal') throw new AiError('refused');
     const text = (r.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
     if (!text.trim()) throw new AiError('empty');
@@ -178,7 +204,8 @@ export async function generateText(req: TextRequest): Promise<string> {
     const r = (await call(`${OPENAI}/chat/completions`, {
       method: 'POST', headers: openaiHeaders(key),
       body: JSON.stringify({ model, max_completion_tokens: maxTokens, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }] }),
-    }, signal)) as { choices?: { message?: { content?: string; refusal?: string } }[] };
+    }, signal)) as { choices?: { message?: { content?: string; refusal?: string } }[] } & OpenAIUsage;
+    report({ provider, model, tag, images: 0, ...openaiUse(r) });
     const m = r.choices?.[0]?.message;
     if (m?.refusal) throw new AiError('refused', m.refusal);
     if (!m?.content?.trim()) throw new AiError('empty');
@@ -191,7 +218,8 @@ export async function generateText(req: TextRequest): Promise<string> {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: { maxOutputTokens: maxTokens },
     }),
-  }, signal)) as GeminiResponse;
+  }, signal)) as GeminiResponse & GeminiUsage;
+  report({ provider, model, tag, images: 0, ...geminiUse(r) });
   return geminiText(r);
 }
 
@@ -209,7 +237,7 @@ function geminiText(r: GeminiResponse): string {
 }
 
 export async function generateJSON<T = unknown>(req: TextRequest & { schema: Record<string, unknown> }): Promise<T> {
-  const { provider, key, model, system, prompt, schema, maxTokens = 16000, signal } = req;
+  const { provider, key, model, system, prompt, schema, maxTokens = 16000, signal, tag = 'other' } = req;
   if (!key) throw new AiError('no_key');
   if (!model) throw new AiError('bad_request', '모델을 골라 주세요');
   if (provider === 'anthropic') {
@@ -222,7 +250,8 @@ export async function generateJSON<T = unknown>(req: TextRequest & { schema: Rec
         tools: [{ name: 'submit', description: '결과를 제출합니다.', input_schema: schema }],
         tool_choice: { type: 'tool', name: 'submit' },
       }),
-    }, signal)) as { content?: { type: string; input?: unknown; text?: string }[]; stop_reason?: string };
+    }, signal)) as { content?: { type: string; input?: unknown; text?: string }[]; stop_reason?: string } & AnthropicUsage;
+    report({ provider, model, tag, images: 0, ...anthropicUse(r) });
     if (r.stop_reason === 'refusal') throw new AiError('refused');
     const tool = (r.content ?? []).find((c) => c.type === 'tool_use');
     if (tool?.input && typeof tool.input === 'object') return tool.input as T;
@@ -237,7 +266,8 @@ export async function generateJSON<T = unknown>(req: TextRequest & { schema: Rec
         messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
         response_format: { type: 'json_schema', json_schema: { name: 'cardnovel', strict: true, schema } },
       }),
-    }, signal)) as { choices?: { message?: { content?: string; refusal?: string } }[] };
+    }, signal)) as { choices?: { message?: { content?: string; refusal?: string } }[] } & OpenAIUsage;
+    report({ provider, model, tag, images: 0, ...openaiUse(r) });
     const m = r.choices?.[0]?.message;
     if (m?.refusal) throw new AiError('refused', m.refusal);
     if (!m?.content) throw new AiError('empty');
@@ -250,7 +280,8 @@ export async function generateJSON<T = unknown>(req: TextRequest & { schema: Rec
       contents: [{ role: 'user', parts: [{ text: prompt + '\n\nJSON 스키마:\n' + JSON.stringify(schema) }] }],
       generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
     }),
-  }, signal)) as GeminiResponse;
+  }, signal)) as GeminiResponse & GeminiUsage;
+  report({ provider, model, tag, images: 0, ...geminiUse(r) });
   return extractJSON(geminiText(r)) as T;
 }
 
@@ -266,6 +297,7 @@ export interface ImageRequest {
   /** pictures to match (style and characters), e.g. the cover */
   refs?: { mime: string; b64: string }[];
   signal?: AbortSignal;
+  tag?: UsageTag;
 }
 
 const GEMINI_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
@@ -275,12 +307,12 @@ export const nearest = (aspect: number, options: string[]): string =>
   options.reduce((best, o) => (Math.abs(Math.log(ratioValue(o) / aspect)) < Math.abs(Math.log(ratioValue(best) / aspect)) ? o : best));
 
 export async function generateImage(req: ImageRequest): Promise<ImageResult> {
-  const { provider, key, model, prompt, aspect, refs = [], signal } = req;
+  const { provider, key, model, prompt, aspect, refs = [], signal, tag = 'image' } = req;
   if (!key) throw new AiError('no_key');
   if (!model) throw new AiError('bad_request', '그림 모델을 골라 주세요');
   if (provider === 'openai') {
     const size = nearest(aspect, OPENAI_SIZES);
-    let r: { data?: { b64_json?: string }[] };
+    let r: { data?: { b64_json?: string }[] } & OpenAIUsage;
     if (refs.length) {
       const fd = new FormData();
       fd.append('model', model);
@@ -295,6 +327,7 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
     }
     const b64 = r.data?.[0]?.b64_json;
     if (!b64) throw new AiError('empty');
+    report({ provider: 'openai', model, tag, images: 1, ...openaiUse(r) });
     return { mime: 'image/png', b64 };
   }
   const parts: unknown[] = [{ text: prompt }];
@@ -305,13 +338,14 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
       contents: [{ role: 'user', parts }],
       generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio: nearest(aspect, GEMINI_RATIOS) } },
     }),
-  }, signal)) as GeminiResponse;
+  }, signal)) as GeminiResponse & GeminiUsage;
   if (r.promptFeedback?.blockReason) throw new AiError('refused', r.promptFeedback.blockReason);
   const part = (r.candidates?.[0]?.content?.parts ?? []).find((p) => p.inlineData?.data);
   if (!part?.inlineData) {
     const reason = r.candidates?.[0]?.finishReason;
     throw new AiError(reason && /SAFETY|PROHIBITED|IMAGE_SAFETY/.test(reason) ? 'refused' : 'empty');
   }
+  report({ provider: 'google', model, tag, images: 1, ...geminiUse(r) });
   return { mime: part.inlineData.mimeType || 'image/png', b64: part.inlineData.data };
 }
 

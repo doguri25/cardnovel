@@ -31,10 +31,11 @@ export function nextEpisodeNumber(all: Work[], series: string): number {
   return Math.max(0, ...all.filter((w) => seriesName(w) === name).map((w) => w.episode || 0)) + 1;
 }
 
-/** A new, empty episode that carries the look of `from`: series, handle, follow line, theme, ratio, font, art style
- *  (including the character reference picture), the add-on kind and the AI choices. */
+/** A new, empty episode that carries the look of `from`: series, handle, follow line, theme (also a custom one),
+ *  watermark, ratio, font, art style (including the character reference picture), the add-on kind and the AI choices. */
 export function nextEpisodeWork(from: Work, d: WorkDefaults, episode: number): Work {
-  const w = newWork({ ...d, theme: from.theme, ratio: from.ratio, font: from.font, textAI: { ...from.textAI }, imageAI: { ...from.imageAI } });
+  const w = newWork({ ...d, theme: from.theme, customTheme: from.customTheme, ratio: from.ratio, font: from.font, textAI: { ...from.textAI }, imageAI: { ...from.imageAI } });
+  if (from.brand) w.brand = { ...from.brand };
   w.series = from.series;
   w.handle = from.handle;
   w.follow = from.follow;

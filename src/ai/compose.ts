@@ -2,7 +2,7 @@
 import { BODY_COUNT, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
-import { AiError, generateImage, generateJSON, generateText, type TextRequest } from './providers';
+import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
 import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SYSTEM_WRITER, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
 
 export interface TextAI { provider: TextRequest['provider']; key: string; model: string }
@@ -17,8 +17,8 @@ interface ComposeAnswer {
 const s = (v: unknown) => (typeof v === 'string' ? v : '').replace(/\\n/g, '\n').trim();
 
 /** Retries once with a smaller output budget for models that do not accept 16k output tokens. */
-async function askJSON<T>(ai: TextAI, prompt: string, schema: Record<string, unknown>, signal?: AbortSignal, maxTokens = 16000): Promise<T> {
-  const req = { ...ai, system: SYSTEM_WRITER, prompt, schema, signal, maxTokens };
+async function askJSON<T>(ai: TextAI, prompt: string, schema: Record<string, unknown>, signal?: AbortSignal, maxTokens = 16000, tag: UsageTag = 'other'): Promise<T> {
+  const req = { ...ai, system: SYSTEM_WRITER, prompt, schema, signal, maxTokens, tag };
   try {
     return await generateJSON<T>(req);
   } catch (e) {
@@ -62,13 +62,13 @@ export interface ComposeResult { mode: Exclude<InputMode, 'auto'>; split?: Split
 
 /** Fills the work's 20 cards from a story. A split manuscript is placed as written; AI then only adds the extras. */
 /** keepStyle: the episode already uses the series' art style, so the writer's style suggestion is not applied */
-export interface SeriesContext { previous: PrevEpisode[]; keepStyle?: boolean }
+export interface SeriesContext { previous: PrevEpisode[]; keepStyle?: boolean; /** the series bible as text */ bible?: string }
 
 /** Fills the work's 20 cards from a story. A split manuscript is placed as written; AI then only adds the extras.
  *  In a series (episode 2 and later) the earlier episodes' summaries go along, and the series' art style is kept. */
 export async function compose(w: Work, story: string, mode: InputMode, outroKind: OutroKind, ai: TextAI | null, signal?: AbortSignal, split?: SplitResult, series?: SeriesContext): Promise<ComposeResult> {
   const m = mode === 'auto' ? detectMode(story) : mode;
-  const cont = series?.previous.length ? { series: w.series, episode: w.episode, previous: series.previous } : {};
+  const cont = series && (series.previous.length || series.bible) ? { series: w.series, episode: w.episode, previous: series.previous, bible: series.bible } : {};
   const keepStyle = !!series?.keepStyle;
   w.outroKind = outroKind;
   w.source = { mode, text: story };
@@ -78,19 +78,19 @@ export async function compose(w: Work, story: string, mode: InputMode, outroKind
       applyCompose(w, {}, sp);
       return { mode: m, split: sp, usedAI: false };
     }
-    const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, fixed: sp, ...cont }), COMPOSE_SCHEMA, signal);
+    const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, fixed: sp, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
     applyCompose(w, a, sp, keepStyle);
     return { mode: m, split: sp, usedAI: true };
   }
   if (!ai) throw new AiError('no_key');
-  const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, ...cont }), COMPOSE_SCHEMA, signal);
+  const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
   if (!Array.isArray(a.cards) || a.cards.filter((c) => s(c?.text)).length < 3) throw new AiError('invalid_json');
   applyCompose(w, a, undefined, keepStyle);
   return { mode: m, usedAI: true };
 }
 
 export async function rewriteCard(w: Work, index: number, ask: string, ai: TextAI, signal?: AbortSignal): Promise<string> {
-  const r = await askJSON<{ text?: string }>(ai, rewritePrompt(w, index, ask), ONE_TEXT_SCHEMA, signal, 2000);
+  const r = await askJSON<{ text?: string }>(ai, rewritePrompt(w, index, ask), ONE_TEXT_SCHEMA, signal, 2000, 'rewrite');
   const t = s(r.text);
   if (!t) throw new AiError('empty');
   return t;
@@ -98,13 +98,13 @@ export async function rewriteCard(w: Work, index: number, ask: string, ai: TextA
 
 /** A 3–4 sentence summary of an episode, for the next one. */
 export async function summarize(w: Work, ai: TextAI, signal?: AbortSignal): Promise<string> {
-  const r = await askJSON<{ text?: string }>(ai, summaryPrompt(w), ONE_TEXT_SCHEMA, signal, 1500);
+  const r = await askJSON<{ text?: string }>(ai, summaryPrompt(w), ONE_TEXT_SCHEMA, signal, 1500, 'summary');
   return s(r.text);
 }
 
 export async function writeOutro(w: Work, kind: OutroKind, ai: TextAI, signal?: AbortSignal): Promise<string> {
   if (kind === 'none') return '';
-  const r = await askJSON<{ text?: string }>(ai, outroPrompt(w, kind), ONE_TEXT_SCHEMA, signal, 1000);
+  const r = await askJSON<{ text?: string }>(ai, outroPrompt(w, kind), ONE_TEXT_SCHEMA, signal, 1000, 'outro');
   return s(r.text);
 }
 
@@ -119,13 +119,21 @@ export interface ImageRef { mime: string; b64: string }
 export interface CardRefs { chars?: ImageRef | null; cover?: ImageRef | null }
 
 /** Draws one card's picture. Returns a data URL (raster) or an SVG string (Claude). */
-export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal): Promise<{ img?: string; svg?: string }> {
+/** Composition ideas for cover candidates, so the three pictures differ. */
+export const COVER_VARIANTS = [
+  'Composition idea: a close-up of the story\'s key object, dramatic light, shallow depth of field.',
+  'Composition idea: a wide establishing shot of the place where the story happens, a small figure for scale.',
+  'Composition idea: the main character from behind or in silhouette at the moment of tension.',
+];
+
+export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string }> {
+  const tag = variant ? 'cover' : undefined;
   if (ai.provider === 'claude') {
     const text = await generateText({
       provider: 'anthropic', key: ai.key, model: ai.model,
       system: 'You draw illustrations as a single standalone SVG document and output nothing else.',
-      prompt: svgPrompt(w, index, artHeight(w, w.cards[index]), ai.quick !== false),
-      maxTokens: ai.quick === false ? 16000 : 8000, signal,
+      prompt: svgPrompt(w, index, artHeight(w, w.cards[index]), ai.quick !== false) + (variant ? `\n\n${variant}` : ''),
+      maxTokens: ai.quick === false ? 16000 : 8000, signal, tag: tag ?? 'svg',
     });
     const svg = sanitizeSVG(text);
     if (!svg) throw new AiError('invalid_json', 'SVG를 읽지 못했어요');
@@ -134,7 +142,7 @@ export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRe
   const list = [refs?.chars, refs?.cover].filter((r): r is ImageRef => !!r);
   const res = await generateImage({
     provider: ai.provider, key: ai.key, model: ai.model,
-    prompt: imagePrompt(w, index, { chars: !!refs?.chars, cover: !!refs?.cover }), aspect: artAspect(w, index), refs: list, signal,
+    prompt: imagePrompt(w, index, { chars: !!refs?.chars, cover: !!refs?.cover }) + (variant ? `\n${variant}` : ''), aspect: artAspect(w, index), refs: list, signal, tag,
   });
   return { img: await shrinkImage(`data:${res.mime};base64,${res.b64}`) };
 }
@@ -142,7 +150,7 @@ export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRe
 /** A character reference sheet in the work's art style, used as the first reference for every card. */
 export async function drawCharacterSheet(w: Work, ai: ImageAI, signal?: AbortSignal): Promise<string> {
   if (ai.provider === 'claude') throw new AiError('bad_request', '인물 기준 그림은 Gemini나 GPT 이미지로 만들어요');
-  const res = await generateImage({ provider: ai.provider, key: ai.key, model: ai.model, prompt: characterSheetPrompt(w), aspect: 3 / 2, refs: [], signal });
+  const res = await generateImage({ provider: ai.provider, key: ai.key, model: ai.model, prompt: characterSheetPrompt(w), aspect: 3 / 2, refs: [], signal, tag: 'refsheet' });
   return shrinkImage(`data:${res.mime};base64,${res.b64}`);
 }
 

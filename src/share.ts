@@ -1,6 +1,6 @@
 // Share links (browser side): upload the 20 cards as JPEGs, then the manifest; the server returns https://…/s/<id>.
 import { captionText, renderToBlob } from './export';
-import { seriesLine, workTitle, type Work } from './model';
+import { seriesLine, stripMarks, workTitle, type Work } from './model';
 import { kv } from './store';
 
 export interface ShareRecord { id: string; url: string; title: string; workId: string; createdAt: number; cover?: string }
@@ -62,7 +62,7 @@ export async function createShare(w: Work, key: string, onProgress: (done: numbe
   const cover = w.cards[0];
   const r = await api<{ id: string; url: string }>('create', key, {
     method: 'POST', headers: { 'content-type': 'application/json' }, signal,
-    body: JSON.stringify({ id, title: workTitle(w), hook: cover.text, caption: captionText(w), handle: w.handle, series: seriesLine(w), ratio: w.ratio, images: urls }),
+    body: JSON.stringify({ id, title: workTitle(w), hook: stripMarks(cover.text), caption: captionText(w), handle: w.handle, series: seriesLine(w), ratio: w.ratio, images: urls }),
   });
   const rec: ShareRecord = { id: r.id, url: r.url, title: workTitle(w), workId: w.id, createdAt: Date.now(), cover: w.thumb };
   await kv.set('shares', [rec, ...(await listShares())].slice(0, 200));

@@ -1,5 +1,5 @@
 // Saving cards: one image, all 20 in a ZIP, or handed to another app (Instagram) through the share sheet.
-import type { Work } from './model';
+import { stripMarks, type Work } from './model';
 import { cardHeight, ensureFonts, renderCard, W } from './render';
 
 export type ImgFormat = 'png' | 'jpg';
@@ -84,7 +84,7 @@ export async function zipAll(w: Work, fmt: ImgFormat, onProgress?: (n: number) =
 export function captionText(w: Work): string {
   const cover = w.cards[0];
   const tags = w.hashtags.length ? w.hashtags : ['#카드소설', '#초단편', '#짧은소설', '#' + (w.series || '').replace(/\s+/g, '')];
-  return [cover.title, cover.text, '', w.caption || '넘기면서 끝까지 읽어 주세요.', '', tags.filter((t) => t.length > 1).join(' ')].join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return [stripMarks(cover.title), stripMarks(cover.text), '', w.caption || '넘기면서 끝까지 읽어 주세요.', '', tags.filter((t) => t.length > 1).join(' ')].join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export const canShareFiles = (files: File[]): boolean => {

@@ -1,4 +1,4 @@
-import type { RatioKey, ThemeKey } from './themes';
+import type { RatioKey, SavedTheme, ThemeKey } from './themes';
 
 export const BODY_COUNT = 18;
 export const TOTAL_CARDS = BODY_COUNT + 2;
@@ -9,6 +9,8 @@ export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
 export type ImgPos = 'top' | 'center' | 'bottom';
 /** stack: picture on top, words below · full: the picture fills the card, words over it · quote: one line of dialogue, large */
 export type CardLayout = 'stack' | 'full' | 'quote';
+/** where the words sit inside their zone; auto = the layout's own choice */
+export type TextPos = 'auto' | 'top' | 'center' | 'bottom';
 export type InputMode = 'auto' | 'long' | 'idea' | 'split';
 export type TextProvider = 'anthropic' | 'google' | 'openai';
 export type ImageProvider = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
@@ -34,7 +36,51 @@ export interface Card {
   /** the Canva design this card's picture was made in, to export it again */
   canvaDesignId?: string;
   layout?: CardLayout;
+  /** type size multiplier for this card (0.85 – 1.3); the renderer still shrinks text that does not fit */
+  textScale?: number;
+  textPos?: TextPos;
 }
+
+export const TEXT_SCALES: { value: number; name: string }[] = [
+  { value: 0.85, name: '작게' }, { value: 1, name: '보통' }, { value: 1.15, name: '크게' }, { value: 1.3, name: '아주 크게' },
+];
+export const TEXT_POS_NAME: Record<TextPos, string> = { auto: '자동', top: '위', center: '가운데', bottom: '아래' };
+
+/** Words between asterisks (*like this*) are drawn in the theme's accent colour. */
+export const stripMarks = (s: string): string => String(s ?? '').replace(/\*([^*\n]+)\*/g, '$1');
+export function parseMarks(s: string): { plain: string; flags: boolean[] } {
+  let plain = '';
+  const flags: boolean[] = [];
+  const re = /\*([^*\n]+)\*/g;
+  let last = 0;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    const before = s.slice(last, m.index);
+    plain += before + m[1];
+    for (let k = 0; k < before.length; k++) flags.push(false); // one flag per UTF-16 unit, like string indices
+    for (let k = 0; k < m[1].length; k++) flags.push(true);
+    last = m.index + m[0].length;
+  }
+  const rest = s.slice(last);
+  plain += rest;
+  for (let k = 0; k < rest.length; k++) flags.push(false);
+  return { plain, flags };
+}
+
+export type BrandPos = 'tl' | 'tr' | 'bl' | 'br';
+export interface Brand {
+  kind: 'logo' | 'handle';
+  /** data URL of the logo (PNG with transparency works best) */
+  logo?: string;
+  pos: BrandPos;
+  /** width of the logo as a share of the card width, in % (handle text scales with it) */
+  size: number;
+  opacity: number;
+  /** which cards carry it */
+  scope: 'all' | 'cover' | 'ends';
+}
+export const DEFAULT_BRAND: Brand = { kind: 'handle', pos: 'tr', size: 14, opacity: 0.75, scope: 'all' };
+export const BRAND_POS_NAME: Record<BrandPos, string> = { tl: '위 왼쪽', tr: '위 오른쪽', bl: '아래 왼쪽', br: '아래 오른쪽' };
+export const BRAND_SCOPE_NAME: Record<Brand['scope'], string> = { all: '모든 카드', cover: '표지만', ends: '표지와 마지막 장' };
 
 export const LAYOUT_NAME: Record<CardLayout, string> = { stack: '기본', full: '전면 그림', quote: '대사' };
 
@@ -70,7 +116,11 @@ export interface Work {
   createdAt: number;
   updatedAt: number;
   ratio: RatioKey;
-  theme: ThemeKey;
+  /** a built-in theme, or 'custom' for the writer's own theme kept in customTheme */
+  theme: ThemeKey | 'custom';
+  customTheme?: SavedTheme;
+  /** logo or handle watermark (a copy of the brand settings, so the work renders the same anywhere) */
+  brand?: Brand;
   font: string;
   series: string;
   handle: string;
@@ -89,6 +139,10 @@ export interface Work {
   /** a few sentences on what happens, written by the text AI, given to the next episode */
   summary?: string;
   review?: Review;
+  /** the 20 cards as finished in Canva; when `on`, every output uses these pictures instead of drawing the cards */
+  finished?: { designId: string; editUrl?: string; images: string[]; at: number; on: boolean };
+  /** a copy of the series bible, so backups and exported files carry it */
+  seriesBible?: import('./bible').SeriesBible;
 }
 
 export const OUTRO_KINDS: Record<OutroKind, { name: string; ask: string }> = {
@@ -158,7 +212,8 @@ export interface WorkDefaults {
   series: string;
   handle: string;
   follow: string;
-  theme?: ThemeKey;
+  theme?: ThemeKey | 'custom';
+  customTheme?: SavedTheme;
   ratio?: RatioKey;
   font?: string;
   textAI?: Work['textAI'];
@@ -176,7 +231,8 @@ export function newWork(d: WorkDefaults): Work {
     createdAt: now,
     updatedAt: now,
     ratio: d.ratio ?? '1:1',
-    theme: d.theme ?? 'fog',
+    theme: d.theme === 'custom' && !d.customTheme ? 'fog' : d.theme ?? 'fog',
+    ...(d.theme === 'custom' && d.customTheme ? { customTheme: { ...d.customTheme } } : {}),
     font: d.font ?? 'auto',
     series: d.series,
     handle: d.handle,
@@ -210,7 +266,7 @@ export function normalizeWork(w: Omit<Partial<Work>, 'cards'> & { cards?: Partia
   return out;
 }
 
-export const workTitle = (w: Work): string => (w.cards[0]?.title || '').trim() || '제목 없음';
+export const workTitle = (w: Work): string => stripMarks(w.cards[0]?.title || '').trim() || '제목 없음';
 /** "3분 미스터리 · 2화" — the series line on the cover and the last card */
 export const seriesLine = (w: Pick<Work, 'series' | 'episode'>): string => [w.series, w.episode ? `${w.episode}화` : ''].filter(Boolean).join(' · ');
 /** a short fingerprint of the cards' words, to see whether a review still matches them */
@@ -219,4 +275,4 @@ export const textSig = (w: Work): string => {
   for (const ch of w.cards.map((c) => `${c.title}|${c.text}`).join('\n')) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36);
 };
-export const countChars = (s: string): number => (s || '').replace(/\s/g, '').length;
+export const countChars = (s: string): number => stripMarks(s || '').replace(/\s/g, '').length;

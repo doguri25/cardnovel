@@ -1,5 +1,5 @@
 // Prompts and the JSON shape the text AI answers in.
-import { BODY_COUNT, OUTRO_KINDS, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, OUTRO_KINDS, stripMarks, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { SVG_EXAMPLE } from './svg-example';
 import { layoutOf } from '../render';
 
@@ -56,18 +56,22 @@ const MODE_RULES: Record<Exclude<InputMode, 'auto'>, string> = {
 /** An earlier episode of the same series, given to the writer so the next one continues it. */
 export interface PrevEpisode { episode: number; title: string; summary: string }
 
-export function seriesBlock(series: string, episode: number | undefined, previous: PrevEpisode[] | undefined): string {
-  if (!episode || !previous?.length) return '';
-  return `
+export function seriesBlock(series: string, episode: number | undefined, previous: PrevEpisode[] | undefined, bible = ''): string {
+  const prev = episode && previous?.length ? `
 연재: 「${series || '시리즈'}」 ${episode}화입니다. 아래 앞 회 줄거리를 이어받습니다.
 - 인물 이름·성격·관계, 배경, 이미 밝혀진 사실을 그대로 지킵니다. 앞 회 내용을 되풀이하지 않습니다.
 - 앞 회를 안 본 독자도 따라올 수 있게 첫 1~2장에서 필요한 것만 짧게 상기시킵니다.
 [앞 회 줄거리]
 ${previous.map((p) => `${p.episode}화 「${p.title}」: ${p.summary}`).join('\n')}
-`;
+` : '';
+  const bib = bible.trim() ? `
+[시리즈 설정집 — 여기 적힌 인물·설정은 바꾸지 않습니다. 풀리지 않은 떡밥은 이번 회에서 이어 가도 되고, 이미 풀린 떡밥은 되풀이하지 않습니다]
+${bible.trim()}
+` : '';
+  return prev + bib;
 }
 
-export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; fixed?: { title: string; hook: string; body: { label: string; text: string }[] }; series?: string; episode?: number; previous?: PrevEpisode[] }): string {
+export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; fixed?: { title: string; hook: string; body: { label: string; text: string }[] }; series?: string; episode?: number; previous?: PrevEpisode[]; bible?: string }): string {
   const { mode, story, outroKind, fixed } = opts;
   const outro = outroKind === 'none' ? '빈 문자열("")' : `${OUTRO_KINDS[outroKind].ask} (60자 이내)`;
   const fixedBlock = fixed
@@ -98,7 +102,7 @@ ${MODE_RULES[mode]}
 - caption: 인스타그램 게시글 본문 2~3문장(한국어, 결말을 밝히지 않음).
 - hashtags: 6~8개, #을 붙인 한국어.
 - summary: 이 회의 줄거리를 결말까지 3~4문장(한국어). 다음 회를 쓸 때 앞 회 줄거리로 씁니다. 주요 인물 이름을 넣습니다.
-${seriesBlock(opts.series ?? '', opts.episode, opts.previous)}${fixedBlock}
+${seriesBlock(opts.series ?? '', opts.episode, opts.previous, opts.bible)}${fixedBlock}
 [입력]
 ${story}`;
 }
@@ -159,8 +163,8 @@ export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cov
   const c = w.cards[index];
   const s = w.style;
   const scene = c.kind === 'cover'
-    ? `Cover illustration for the story "${c.title}". ${c.scene || c.text}`
-    : c.scene || `A scene for this part of a Korean short story: ${c.text}`;
+    ? `Cover illustration for the story "${stripMarks(c.title)}". ${c.scene || stripMarks(c.text)}`
+    : c.scene || `A scene for this part of a Korean short story: ${stripMarks(c.text)}`;
   const refLine = refs.chars && refs.cover
     ? 'Reference images: the first is the character sheet (keep every character\'s face, hair, build and clothes identical to it); the second is the cover (match its art style, palette and lighting).'
     : refs.chars

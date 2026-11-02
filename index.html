@@ -23,6 +23,7 @@
   <span class="offline-pill" id="offlinePill" hidden>오프라인</span>
   <div class="spacer"></div>
   <div class="actions">
+    <button class="btn usage-pill" id="btnUsage" type="button" title="이번 달 AI 추정 비용">이번 달 $0</button>
     <button class="btn" id="btnLibrary" type="button">보관함</button>
     <button class="btn" id="btnSettings" type="button">설정</button>
     <button class="btn" id="btnCaption" type="button">캡션 복사</button>
@@ -170,6 +171,11 @@
         <div class="field">
           <label>카드 테마</label>
           <div class="themes" id="themes"></div>
+          <div class="toolbar"><button class="btn small" id="btnThemeNew" type="button">+ 내 테마 만들기</button><button class="btn small" id="btnThemeEdit" type="button" hidden>이 테마 고치기</button></div>
+        </div>
+        <div class="field">
+          <label>로고 워터마크</label>
+          <div class="toolbar brand-line"><label class="chk"><input type="checkbox" id="brandOn"> 카드에 넣기</label><button class="btn small" id="btnBrand" type="button">꾸미기</button><span class="hint" id="brandHint"></span></div>
         </div>
         <div class="row two">
           <div class="field">
@@ -185,6 +191,7 @@
           </div>
         </div>
         <div class="toolbar">
+          <button class="btn small" id="btnBible" type="button">설정집</button>
           <button class="btn small" id="btnNextEpisode" type="button">이 시리즈 다음 회 만들기</button>
           <span class="hint">회차를 넣으면 표지에 ‘시리즈 · N화’로 나와요.</span>
         </div>
@@ -208,7 +215,9 @@
           </div>
           <button class="btn tonal" id="btnSaveOne" type="button">이 카드만 저장</button>
           <button class="btn" id="btnInsta" type="button">인스타 미리보기</button>
+          <button class="btn" id="btnReels" type="button">릴스 영상 만들기</button>
           <button class="btn" id="btnShare" type="button">인스타로 공유 (20장)</button>
+          <div class="finish-box" id="finishBox"></div>
           <div class="share-row"><button class="btn" id="btnShareLink" type="button">공유 링크 만들기</button><button class="btn" id="btnShareList" type="button">링크 목록</button></div>
           <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요. 「공유 링크」는 인스타 없이도 넘겨 읽는 웹 페이지 주소를 만들어요.</p>
         </div>
