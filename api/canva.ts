@@ -1,5 +1,7 @@
 // All Canva endpoints in one function: /api/canva/<action> → here (see vercel.json).
 import { router } from './_lib/router.js';
+import * as aiImage from './_canva/ai-image.js';
+import * as aiImageJob from './_canva/ai-image-job.js';
 import * as callback from './_canva/callback.js';
 import * as design from './_canva/design.js';
 import * as exportDesign from './_canva/export.js';
@@ -15,4 +17,5 @@ import * as status from './_canva/status.js';
 export const { GET, POST } = router('/api/canva', {
   login, callback, status, logout, design, export: exportDesign, return: ret,
   'finish-upload': finishUpload, 'finish-import': finishImport, 'finish-export': finishExport, page,
+  'ai-image': aiImage, 'ai-image-job': aiImageJob,
 });

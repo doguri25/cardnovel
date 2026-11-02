@@ -1,6 +1,7 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
 import { BODY_COUNT, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
+import { canvaAiImage } from '../canva';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
 import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
 import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SYSTEM_WRITER, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
@@ -109,14 +110,15 @@ export async function writeOutro(w: Work, kind: OutroKind, ai: TextAI, signal?: 
 }
 
 /* ================= pictures ================= */
-export interface ImageAI { provider: 'gemini' | 'openai' | 'claude'; key: string; model: string; quick?: boolean }
+export interface ImageAI { provider: 'gemini' | 'openai' | 'claude' | 'canvaai'; key: string; model: string; quick?: boolean }
 
 /** Picture-area aspect ratio of a card (width / height): the top band, or the whole card for full-bleed and quote cards. */
 export const artAspect = (w: Work, index = 1): number => W / artHeight(w, w.cards[index] ?? w.cards[1]);
 
 export interface ImageRef { mime: string; b64: string }
-/** Reference pictures for one card: the character sheet (keeps people the same) and the cover (keeps the look). */
-export interface CardRefs { chars?: ImageRef | null; cover?: ImageRef | null }
+/** Reference pictures for one card: the character sheet (keeps people the same) and the cover (keeps the look).
+ *  Canva AI takes pictures already in Canva instead: `canvaCover` is the media id of a cover Canva AI drew. */
+export interface CardRefs { chars?: ImageRef | null; cover?: ImageRef | null; canvaCover?: string }
 
 /** Draws one card's picture. Returns a data URL (raster) or an SVG string (Claude). */
 /** Composition ideas for cover candidates, so the three pictures differ. */
@@ -126,8 +128,16 @@ export const COVER_VARIANTS = [
   'Composition idea: the main character from behind or in silhouette at the moment of tension.',
 ];
 
-export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string }> {
+export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string; mediaId?: string }> {
   const tag = variant ? 'cover' : undefined;
+  if (ai.provider === 'canvaai') {
+    const cover = index !== 0 ? refs?.canvaCover : undefined;
+    const out = await canvaAiImage({
+      prompt: imagePrompt(w, index, { cover: !!cover }) + (variant ? `\n${variant}` : ''),
+      aspect: artAspect(w, index), refs: cover ? [cover] : [],
+    }, signal);
+    return { img: await shrinkImage(out.dataUrl), mediaId: out.mediaId };
+  }
   if (ai.provider === 'claude') {
     const text = await generateText({
       provider: 'anthropic', key: ai.key, model: ai.model,
@@ -149,7 +159,7 @@ export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRe
 
 /** A character reference sheet in the work's art style, used as the first reference for every card. */
 export async function drawCharacterSheet(w: Work, ai: ImageAI, signal?: AbortSignal): Promise<string> {
-  if (ai.provider === 'claude') throw new AiError('bad_request', '인물 기준 그림은 Gemini나 GPT 이미지로 만들어요');
+  if (ai.provider === 'claude' || ai.provider === 'canvaai') throw new AiError('bad_request', '인물 기준 그림은 Gemini나 GPT 이미지로 만들어요');
   const res = await generateImage({ provider: ai.provider, key: ai.key, model: ai.model, prompt: characterSheetPrompt(w), aspect: 3 / 2, refs: [], signal, tag: 'refsheet' });
   return shrinkImage(`data:${res.mime};base64,${res.b64}`);
 }

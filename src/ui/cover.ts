@@ -1,12 +1,12 @@
 // 「표지 후보」: three cover pictures with different compositions, shown as finished covers; the writer picks one.
 import type { App } from '../app';
 import { COVER_VARIANTS, drawCard, type CardRefs } from '../ai/compose';
-import { aiMessage } from '../ai/providers';
+import { pictureMessage } from '../canva';
 import type { Work } from '../model';
 import { cardHeight, ensureFonts, renderCard, srcOf, W } from '../render';
 import { confirmBox, esc, openModal, toast } from './dom';
 
-interface Slot { img?: string; svg?: string; error?: string; busy: boolean }
+interface Slot { img?: string; svg?: string; mediaId?: string; error?: string; busy: boolean }
 
 async function coverPreview(w: Work, pic: { img?: string; svg?: string }): Promise<string> {
   const draft: Work = { ...w, cards: w.cards.map((c, i) => (i === 0 ? { ...c, img: pic.img, svg: pic.svg } : c)) };
@@ -22,12 +22,14 @@ async function coverPreview(w: Work, pic: { img?: string; svg?: string }): Promi
   return s.toDataURL('image/jpeg', 0.86);
 }
 
-export async function openCoverCandidates(app: App, refs: () => CardRefs | null, label: string, price: number, onPicked: () => void): Promise<void> {
+/** `price`: estimated dollars per picture, or null for Canva AI (it uses the writer's Canva AI allowance instead). */
+export async function openCoverCandidates(app: App, refs: () => CardRefs | null, label: string, price: number | null, onPicked: () => void): Promise<void> {
   const ai = app.imageAI();
   if (!ai) { toast(`${label} 키를 먼저 넣어 주세요.`); app.openSettings(); return; }
   const w = app.work();
   const n = COVER_VARIANTS.length;
-  if (!(await confirmBox(`표지 그림 후보 ${n}장을 ${label}(으)로 그립니다. 예상 비용은 약 $${(price * n).toFixed(2)}예요.`, { ok: '후보 그리기', detail: ['가까이 본 핵심 사물 · 무대 전경 · 인물 뒷모습, 세 가지 구도로 그려요.', '마음에 드는 하나를 고르면 표지에 들어가고, 나머지는 버려요.'] }))) return;
+  const cost = price === null ? 'Canva AI 사용량이 차감돼요.' : `예상 비용은 약 $${(price * n).toFixed(2)}예요.`;
+  if (!(await confirmBox(`표지 그림 후보 ${n}장을 ${label}(으)로 그립니다. ${cost}`, { ok: '후보 그리기', detail: ['가까이 본 핵심 사물 · 무대 전경 · 인물 뒷모습, 세 가지 구도로 그려요.', '마음에 드는 하나를 고르면 표지에 들어가고, 나머지는 버려요.'] }))) return;
 
   const slots: Slot[] = COVER_VARIANTS.map(() => ({ busy: true }));
   const previews: (string | null)[] = COVER_VARIANTS.map(() => null);
@@ -67,6 +69,7 @@ export async function openCoverCandidates(app: App, refs: () => CardRefs | null,
         if (s.img) c.img = s.img;
         if (s.svg) c.svg = s.svg;
         c.imgSource = ai.provider;
+        if (s.mediaId) c.canvaMediaId = s.mediaId; else delete c.canvaMediaId;
         c.imgPos = 'center';
         app.save(); onPicked(); app.scheduleRender();
         close();
@@ -86,7 +89,7 @@ export async function openCoverCandidates(app: App, refs: () => CardRefs | null,
         slots[i] = { ...out, busy: false };
         previews[i] = await coverPreview(w, out);
       } catch (e) {
-        slots[i] = { busy: false, error: aiMessage(e) };
+        slots[i] = { busy: false, error: pictureMessage(e) };
       }
       paint();
     }

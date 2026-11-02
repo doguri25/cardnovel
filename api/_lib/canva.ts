@@ -122,9 +122,10 @@ export const redirect = (location: string, setCookies: string[] = []): Response 
   setCookies.forEach((c) => h.append('set-cookie', c));
   return new Response(null, { status: 302, headers: h });
 };
-export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return json({ error: e.code, message: e.message }, e.status);
-  return json({ error: 'internal_error', message: String(e) }, 500);
+/** `setCookies`: a refreshed token must still reach the browser when the call after it fails (refresh tokens are single-use). */
+export function errorResponse(e: unknown, setCookies: string[] = []): Response {
+  if (e instanceof HttpError) return json({ error: e.code, message: e.message }, e.status, setCookies);
+  return json({ error: 'internal_error', message: String(e) }, 500, setCookies);
 }
 
 /* ---------- PKCE state cookie ---------- */

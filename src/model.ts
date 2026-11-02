@@ -5,7 +5,7 @@ export const TOTAL_CARDS = BODY_COUNT + 2;
 
 export type CardKind = 'cover' | 'body' | 'outro';
 export type OutroKind = 'question' | 'teaser' | 'note' | 'afterglow' | 'none';
-export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
+export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canvaai' | 'canva' | 'upload';
 export type ImgPos = 'top' | 'center' | 'bottom';
 /** stack: picture on top, words below · full: the picture fills the card, words over it · quote: one line of dialogue, large */
 export type CardLayout = 'stack' | 'full' | 'quote';
@@ -13,7 +13,8 @@ export type CardLayout = 'stack' | 'full' | 'quote';
 export type TextPos = 'auto' | 'top' | 'center' | 'bottom';
 export type InputMode = 'auto' | 'long' | 'idea' | 'split';
 export type TextProvider = 'anthropic' | 'google' | 'openai';
-export type ImageProvider = 'gemini' | 'openai' | 'claude' | 'canva' | 'upload';
+/** canvaai: Canva's own image AI on the writer's Canva account · canva: draw each card by hand in the Canva editor */
+export type ImageProvider = 'gemini' | 'openai' | 'claude' | 'canvaai' | 'canva' | 'upload';
 
 export interface Card {
   id: string;
@@ -35,6 +36,8 @@ export interface Card {
   imgPos?: ImgPos;
   /** the Canva design this card's picture was made in, to export it again */
   canvaDesignId?: string;
+  /** the Canva media id of a picture Canva AI drew; the cover's is sent with the other cards to keep the look */
+  canvaMediaId?: string;
   layout?: CardLayout;
   /** type size multiplier for this card (0.85 – 1.3); the renderer still shrinks text that does not fit */
   textScale?: number;

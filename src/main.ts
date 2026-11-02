@@ -37,7 +37,7 @@ import { money } from './usage';
 import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
 import { afterLocalSave, renderDriveBox, startDriveSync, type DriveDeps } from './ui/drive';
-import { CANVA_MESSAGES, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, readLanding } from './canva';
+import { CANVA_MESSAGES, CANVA_STOP, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, pictureMessage, readLanding } from './canva';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -56,7 +56,9 @@ let artCtl: AbortController | null = null;
 let uploadTarget: number | null = null;
 
 const PROVIDER_NAME: Record<TextProvider, string> = { anthropic: 'Claude', google: 'Gemini', openai: 'GPT' };
-const IMG_NAME: Record<ImageProvider, string> = { gemini: 'Gemini', openai: 'GPT', claude: 'Claude SVG', canva: 'Canva', upload: '올림' };
+const IMG_NAME: Record<ImageProvider, string> = { gemini: 'Gemini', openai: 'GPT', claude: 'Claude SVG', canvaai: 'Canva AI', canva: 'Canva', upload: '올림' };
+/** the Canva connection is used to draw (Canva AI) or to edit by hand (Canva) */
+const usesCanva = (p: ImageProvider) => p === 'canva' || p === 'canvaai';
 const KIND_NAME: Record<Card['kind'], string> = { cover: '표지', body: '본문', outro: '마지막' };
 
 const defaults = (): WorkDefaults => ({
@@ -225,6 +227,7 @@ function textAI(): TextAI | null {
 function imageAI(): ImageAI | null {
   const p = work.imageAI.provider;
   if (p === 'canva' || p === 'upload') return null;
+  if (p === 'canvaai') return { provider: 'canvaai', key: '', model: 'canva' }; // the Canva connection is the key
   const key = keyFor(settings, p);
   if (!key) return null;
   const model = work.imageAI.model || (p === 'gemini' ? settings.models.geminiImage : p === 'openai' ? settings.models.openaiImage : settings.models.anthropic);
@@ -275,9 +278,9 @@ async function renderImageAI() {
   const p = work.imageAI.provider;
   $<HTMLSelectElement>('imageProvider').value = p;
   const sel = $<HTMLSelectElement>('imageModel');
-  sel.hidden = p === 'canva' || p === 'upload';
+  sel.hidden = usesCanva(p) || p === 'upload';
   $<HTMLButtonElement>('btnArtAll').disabled = p === 'canva' || p === 'upload' || !online();
-  if (p === 'canva') { void renderCanvaStatus(); return; }
+  if (usesCanva(p)) { void renderCanvaStatus(); return; }
   if (sel.hidden) { setStatus($('artStatus'), '카드마다 「올리기」로 그림을 넣으세요.'); return; }
   const textP: TextProvider = p === 'gemini' ? 'google' : p === 'openai' ? 'openai' : 'anthropic';
   if (!keyFor(settings, textP)) { fillSelect(sel, [], '', `${PROVIDER_NAME[textP]} 키 필요`); setStatus($('artStatus'), `${IMG_NAME[p]}로 그리려면 설정에서 ${PROVIDER_NAME[textP]} 키를 넣어 주세요.`); return; }
@@ -336,12 +339,14 @@ function renderRefBox() {
   $<HTMLButtonElement>('btnRefClear').hidden = !ref;
   $('refNote').textContent = p === 'gemini' || p === 'openai'
     ? (ref ? '모든 그림에 함께 보내 얼굴·머리·옷차림을 맞춰요.' : '인물 생김새를 고정하려면 기준 그림을 넣으세요. 모든 그림 요청에 함께 보내요.')
-    : `${IMG_NAME[p]}에는 기준 그림을 보내지 않아요. Gemini·GPT 이미지에서 쓰여요.`;
+    : p === 'canvaai'
+      ? 'Canva AI는 표지 그림을 참고해 그림체를 맞춰요. 인물 기준 그림은 Gemini·GPT 이미지에서 쓰여요.'
+      : `${IMG_NAME[p]}에는 기준 그림을 보내지 않아요. Gemini·GPT 이미지에서 쓰여요.`;
 }
 
 async function makeRefSheet() {
   const ai = imageAI();
-  if (!ai || ai.provider === 'claude') {
+  if (!ai || ai.provider === 'claude' || ai.provider === 'canvaai') {
     toast(ai ? '인물 기준 그림은 Gemini 이미지나 GPT 이미지로 만들어요. 그림 AI를 바꿔 주세요.' : `${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`);
     if (!ai && work.imageAI.provider !== 'canva' && work.imageAI.provider !== 'upload') openSettings();
     return;
@@ -605,7 +610,7 @@ async function onCardAction(act: string, i: number) {
     save(); buildCardList(); scheduleRender();
     $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${j}"] button[data-act="${act}"]`)?.focus();
   } else if (act === 'clear') {
-    delete card.img; delete card.svg; delete card.imgSource;
+    delete card.img; delete card.svg; delete card.imgSource; delete card.canvaMediaId;
     save(); refreshRow(i); scheduleRender();
   } else if (act === 'upload') {
     uploadTarget = i;
@@ -619,8 +624,8 @@ async function onCardAction(act: string, i: number) {
   } else if (act === 'ai') {
     await drawOne(i);
   } else if (act === 'coverCands') {
-    const p = work.imageAI.provider as 'gemini' | 'openai' | 'claude';
-    await openCoverCandidates(app, () => cardRefs(0), IMG_NAME[p], settings.prices[p] ?? 0, () => { refreshRow(0); });
+    const p = work.imageAI.provider as 'gemini' | 'openai' | 'claude' | 'canvaai';
+    await openCoverCandidates(app, () => cardRefs(0), IMG_NAME[p], p === 'canvaai' ? null : settings.prices[p] ?? 0, () => { refreshRow(0); });
   } else if (act === 'rewrite') {
     await rewrite(i);
   }
@@ -675,6 +680,11 @@ async function rewrite(i: number) {
 /** Pictures sent along with a card's request: the character sheet first, then the cover (for the other cards). */
 function cardRefs(i: number): CardRefs | null {
   const p = work.imageAI.provider;
+  if (p === 'canvaai') {
+    // Canva AI follows the cover only when Canva AI drew it (the picture is then already in the writer's Canva)
+    const cover = work.cards[0];
+    return i !== 0 && cover.imgSource === 'canvaai' && cover.canvaMediaId ? { canvaCover: cover.canvaMediaId } : null;
+  }
   if (p !== 'gemini' && p !== 'openai') return null;
   const chars = work.style.refImage ? dataUrlParts(work.style.refImage) : null;
   const cover = i !== 0 && work.cards[0].img ? dataUrlParts(work.cards[0].img) : null;
@@ -699,12 +709,13 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
     if (out.img) card.img = out.img;
     if (out.svg) card.svg = out.svg;
     card.imgSource = ai.provider;
+    if (out.mediaId) card.canvaMediaId = out.mediaId; else delete card.canvaMediaId;
     card.imgPos = 'center';
     save();
     if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.`);
     return true;
   } catch (e) {
-    if (!quiet) setStatus($('artStatus'), aiMessage(e), 'error');
+    if (!quiet) artError(e);
     if (quiet) throw e;
     return false;
   } finally {
@@ -714,36 +725,60 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
   }
 }
 
+/** Shows why a picture failed; when the Canva connection is the problem, with the button that fixes it. */
+function artError(e: unknown, prefix = '') {
+  const st = $('artStatus');
+  if (e instanceof CanvaError && (e.code === 'not_connected' || e.code === 'mcp_unauthorized')) {
+    st.className = 'status error';
+    st.innerHTML = `${esc(prefix + canvaMessage(e))} <button class="btn tiny primary" type="button" data-a="canvaLogin">Canva 연결하기</button>`;
+    st.querySelector('[data-a="canvaLogin"]')!.addEventListener('click', () => void goCanvaLogin());
+    return;
+  }
+  setStatus(st, prefix + pictureMessage(e), 'error');
+}
+
 async function drawAll() {
   const ai = imageAI();
   if (!ai) { toast(`${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`); openSettings(); return; }
+  if (ai.provider === 'canvaai') {
+    const connected = await canvaStatus();
+    if (connected === null) { toast(CANVA_MESSAGES.unavailable); return; }
+    if (!connected) { artError(new CanvaError('not_connected')); return; }
+  }
   let targets = work.cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro' && !srcOf(c)).map(({ i }) => i);
   if (!targets.length) {
     if (!(await confirmBox('모든 카드에 그림이 있어요. 표지와 본문 19장을 모두 다시 그릴까요?', { ok: '모두 다시 그리기' }))) return;
     targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
     await keepVersion('draw');
   }
-  const price = settings.prices[ai.provider] ?? 0;
-  const spent = await monthTotal(app);
-  const ok = await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${(price * targets.length).toFixed(2)}예요.`, {
-    ok: '그리기', detail: [
-      `이번 달 지금까지 추정 ${money(spent)}${settings.monthlyBudget ? ` (예산 ${money(settings.monthlyBudget)})` : ''}.`,
-      '장당 단가는 설정에서 고칠 수 있어요.',
-      ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
-    ],
-  });
+  const ok = ai.provider === 'canvaai'
+    ? await confirmBox(`그림 ${targets.length}장을 Canva AI로 그립니다. 연결한 Canva 계정의 AI 사용량이 장마다 차감돼요.`, {
+      ok: '그리기', detail: [
+        '돈은 이 앱에서 따로 나가지 않아요. Canva 요금제의 AI 사용 한도 안에서 그려요.',
+        '장당 20~40초쯤 걸려요. 한도에 닿으면 거기서 멈추고, 그린 그림은 남아요.',
+        '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
+      ],
+    })
+    : await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${((settings.prices[ai.provider] ?? 0) * targets.length).toFixed(2)}예요.`, {
+      ok: '그리기', detail: [
+        `이번 달 지금까지 추정 ${money(await monthTotal(app))}${settings.monthlyBudget ? ` (예산 ${money(settings.monthlyBudget)})` : ''}.`,
+        '장당 단가는 설정에서 고칠 수 있어요.',
+        ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
+      ],
+    });
   if (!ok) return;
   artCtl = new AbortController();
   const signal = artCtl.signal;
   $('btnArtStop').hidden = false;
   $<HTMLButtonElement>('btnArtAll').disabled = true;
-  let done = 0, failed = 0, stop: string | null = null;
+  let done = 0, failed = 0, stop: unknown = null;
   const status = () => setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${targets.length}`, 'busy');
   status();
   const one = async (i: number) => {
     try { await drawOne(i, signal, true); done++; } catch (e) {
       failed++;
-      if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = aiMessage(e);
+      if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = e;
+      if (e instanceof CanvaError && CANVA_STOP.includes(e.code)) stop = e;
     }
     status();
   };
@@ -756,7 +791,7 @@ async function drawAll() {
   $('btnArtStop').hidden = true;
   $<HTMLButtonElement>('btnArtAll').disabled = false;
   if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.`);
-  else if (stop) setStatus($('artStatus'), `${stop} ${done}장은 넣었습니다.`, 'error');
+  else if (stop) artError(stop, done ? `${done}장은 넣었습니다. ` : '');
   else setStatus($('artStatus'), failed ? `${done}장을 넣었고 ${failed}장은 실패했어요. 해당 카드의 「AI 그림」을 다시 눌러 보세요.` : `그림 ${done}장을 모두 넣었어요.`);
 }
 
@@ -775,6 +810,7 @@ async function onUpload(file: File) {
   const card = work.cards[i];
   delete card.svg;
   card.img = await shrinkImage(url);
+  delete card.canvaMediaId;
   card.imgSource = work.imageAI.provider === 'canva' ? 'canva' : 'upload';
   card.imgPos = 'center';
   save(); refreshRow(i); scheduleRender();
@@ -816,7 +852,7 @@ async function runCompose() {
     const draft: Work = JSON.parse(JSON.stringify(work));
     const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split, seriesCtx);
     if (r.mode === 'split' || r.usedAI) {
-      draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; } });
+      draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; delete c.canvaMediaId; } });
     }
     if (ai && draft.outroKind !== 'none' && !draft.cards[TOTAL_CARDS - 1].text) {
       try { draft.cards[TOTAL_CARDS - 1].text = await writeOutro(draft, draft.outroKind, ai, composeCtl.signal); } catch { /* the writer can fill it in */ }
@@ -1692,14 +1728,18 @@ async function renderCanvaStatus() {
   const st = $('artStatus');
   setStatus(st, 'Canva 연결을 확인하는 중…', 'busy');
   const connected = await canvaStatus();
-  if (work.imageAI.provider !== 'canva') return;
+  const p = work.imageAI.provider;
+  if (!usesCanva(p)) return;
   st.className = 'status';
+  $<HTMLButtonElement>('btnArtAll').disabled = p !== 'canvaai' || !connected || !online();
   if (connected === null) { st.textContent = CANVA_MESSAGES.unavailable; return; }
   if (connected) {
-    st.innerHTML = 'Canva에 연결됐어요. 카드마다 「Canva에서 그리기」를 누르세요. <button class="btn tiny" type="button" id="btnCanvaLogout">연결 끊기</button>';
+    st.innerHTML = (p === 'canvaai'
+      ? 'Canva에 연결됐어요. 「모든 그림 그리기」나 카드의 「AI 그림」을 누르면 Canva AI가 그려요 (Canva AI 사용량 차감).'
+      : 'Canva에 연결됐어요. 카드마다 「Canva에서 그리기」를 누르세요.') + ' <button class="btn tiny" type="button" id="btnCanvaLogout">연결 끊기</button>';
     $('btnCanvaLogout').addEventListener('click', async () => { await canvaLogout().catch(() => undefined); void renderCanvaStatus(); });
   } else {
-    st.innerHTML = 'Canva로 그리려면 먼저 연결해 주세요. <button class="btn tiny primary" type="button" id="btnCanvaLogin">Canva 연결하기</button>';
+    st.innerHTML = `${p === 'canvaai' ? 'Canva AI로 그리려면 먼저 Canva를 연결해 주세요.' : 'Canva로 그리려면 먼저 연결해 주세요.'} <button class="btn tiny primary" type="button" id="btnCanvaLogin">Canva 연결하기</button>`;
     $('btnCanvaLogin').addEventListener('click', () => void goCanvaLogin());
   }
 }
@@ -1794,13 +1834,13 @@ async function handleCanvaLanding() {
   if (!l) return;
   history.replaceState(null, '', url.pathname);
   if (l.kind === 'connected') {
-    if (work.imageAI.provider !== 'canva') { work.imageAI = { provider: 'canva', model: '' }; save(); void renderImageAI(); buildCardList(); }
+    if (!usesCanva(work.imageAI.provider)) { work.imageAI = { provider: 'canva', model: '' }; save(); void renderImageAI(); buildCardList(); }
     // make sure the browser really kept the sign-in before saying so
     if ((await canvaStatus()) === false) {
       toast('Canva 로그인은 됐는데 이 브라우저에 연결 정보가 저장되지 않았어요. 이 사이트의 쿠키 차단을 풀고 「Canva 연결하기」를 다시 눌러 주세요.', 9000);
       return;
     }
-    toast('Canva에 연결했어요. 카드의 「Canva에서 그리기」를 눌러 주세요.', 5000);
+    toast(work.imageAI.provider === 'canvaai' ? 'Canva에 연결했어요. 「모든 그림 그리기」를 누르면 Canva AI가 그려요.' : 'Canva에 연결했어요. 카드의 「Canva에서 그리기」를 눌러 주세요.', 5000);
     return;
   }
   if (l.kind === 'error') {
