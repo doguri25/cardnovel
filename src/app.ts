@@ -2,6 +2,7 @@
 import type { ImageAI, TextAI } from './ai/compose';
 import type { Work } from './model';
 import type { Settings } from './settings';
+import type { VersionReason } from './versions';
 
 export interface App {
   work(): Work;
@@ -24,4 +25,6 @@ export interface App {
   saveSettings(): Promise<void>;
   /** redraws the look panel (ratio, themes, font, series, watermark) */
   renderLook(): void;
+  /** keeps a version of the open work in the history (never fails) */
+  keepVersion(reason: VersionReason): Promise<void>;
 }

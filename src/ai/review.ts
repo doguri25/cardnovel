@@ -32,7 +32,8 @@ export const REVIEW_SCHEMA = {
 
 const num = (i: number) => String(i + 1).padStart(2, '0');
 
-export function reviewPrompt(w: Work): string {
+/** `history`: what past posts did (see reviewHistory in posts.ts), so title and hook advice fits this writer's readers */
+export function reviewPrompt(w: Work, history = ''): string {
   const lines = w.cards.map((c, i) => {
     if (c.kind === 'cover') return `${num(i)} 표지 — 제목: ${c.title || '(없음)'} / 훅: ${c.text || '(없음)'}`;
     if (c.kind === 'outro') return w.outroKind === 'none' || !c.text.trim() ? null : `${num(i)} 마지막 장 덧붙임: ${c.text}`;
@@ -54,7 +55,9 @@ export function reviewPrompt(w: Work): string {
 - titles: 제목과 훅 후보 3쌍. title 2~14자, hook 25자 이내, why는 그 후보가 좋은 이유 한 줄.
 
 [카드]
-${lines}`;
+${lines}${history ? `
+
+${history}` : ''}`;
 }
 
 interface RawReview {
@@ -97,15 +100,17 @@ export function normalizeReview(raw: RawReview, w: Work, at = Date.now()): Revie
 
 export const totalScore = (r: Review): number => AXES.reduce((n, a) => n + (r.scores[a] || 0), 0);
 
-export async function reviewWork(w: Work, ai: TextAI, signal?: AbortSignal): Promise<Review> {
+export async function reviewWork(w: Work, ai: TextAI, signal?: AbortSignal, history = ''): Promise<Review> {
   const body = w.cards.filter((c) => c.kind === 'body' && c.text.trim()).length;
   if (body < 6) throw new AiError('bad_request', '본문을 6장 이상 채운 뒤 평가해 주세요');
-  const req = { ...ai, system: SYSTEM_WRITER, prompt: reviewPrompt(w), schema: REVIEW_SCHEMA, signal, maxTokens: 6000, tag: 'review' as const };
+  const req = { ...ai, system: SYSTEM_WRITER, prompt: reviewPrompt(w, history), schema: REVIEW_SCHEMA, signal, maxTokens: 6000, tag: 'review' as const };
   let raw: RawReview;
   try { raw = await generateJSON<RawReview>(req); } catch (e) {
     if (e instanceof AiError && e.code === 'invalid_json') raw = await generateJSON<RawReview>(req); else throw e;
   }
   const r = normalizeReview(raw, w);
   if (!r.summary && !r.notes.length && !totalScore(r)) throw new AiError('invalid_json');
+  const past = history.match(/\((\d+)편\)/);
+  if (past) r.history = Number(past[1]);
   return r;
 }

@@ -1,20 +1,21 @@
 // Spending record: every AI call adds one line (tokens, pictures, estimated cost), kept per month on this device.
 import type { UsageEvent, UsageTag } from './ai/providers';
-import type { Settings } from './settings';
+import { DEFAULT_SETTINGS, type Settings } from './settings';
 import { kv } from './store';
 
 export interface UsageRecord extends UsageEvent { t: number; workId: string; cost: number }
 
 export const TAG_NAME: Record<UsageTag, string> = {
-  compose: '카드 구성', rewrite: '다시 쓰기', outro: '마지막 장 한 줄', summary: '줄거리 요약', review: 'AI 평가', bible: '설정집',
-  svg: 'Claude SVG 그림', image: '그림', refsheet: '인물 기준 그림', cover: '표지 후보', other: '기타',
+  compose: '카드 구성', rewrite: '다시 쓰기', outro: '마지막 장 한 줄', summary: '줄거리 요약', review: 'AI 평가', proof: '일괄 교정', insight: '성과 분석', bible: '설정집',
+  svg: 'Claude SVG 그림', image: '그림', refsheet: '인물 기준 그림', cover: '표지 후보', tts: 'AI 낭독', other: '기타',
 };
 export const PROVIDER_NAME: Record<UsageEvent['provider'], string> = { anthropic: 'Claude', google: 'Gemini', openai: 'GPT' };
 
 export const monthKey = (t: number): string => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 
-/** Estimated USD: pictures at the per-picture price, everything else (including SVG drawing) by tokens. */
-export function estimateCost(u: UsageEvent, s: Pick<Settings, 'prices' | 'textPrices'>): number {
+/** Estimated USD: pictures at the per-picture price, narration per 1,000 characters, everything else (including SVG drawing) by tokens. */
+export function estimateCost(u: UsageEvent, s: Pick<Settings, 'prices' | 'textPrices'> & Partial<Pick<Settings, 'ttsPrices'>>): number {
+  if (u.chars) { const p = s.ttsPrices ?? DEFAULT_SETTINGS.ttsPrices; return (u.chars / 1000) * (u.provider === 'openai' ? p.openai : p.google); }
   if (u.images > 0) {
     const per = u.provider === 'google' ? s.prices.gemini : u.provider === 'openai' ? s.prices.openai : s.prices.claude;
     return u.images * per;

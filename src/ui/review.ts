@@ -3,6 +3,8 @@ import type { App } from '../app';
 import { aiMessage, AiError } from '../ai/providers';
 import { reviewWork, totalScore } from '../ai/review';
 import { REVIEW_AXES, textSig, type ReviewAxis } from '../model';
+import { reviewHistory } from '../posts';
+import { works } from '../store';
 import { $, esc, fmtDate, setStatus, toast } from './dom';
 
 let ctl: AbortController | null = null;
@@ -46,7 +48,7 @@ export function renderReview(app: App): void {
         <div class="title-row"><div><b>${esc(x.title)}</b>${x.hook ? `<span class="hook">${esc(x.hook)}</span>` : ''}${x.why ? `<span class="why">${esc(x.why)}</span>` : ''}</div>
           <button class="btn small" type="button" data-title="${k}" ${on ? 'disabled' : ''}>${on ? '표지에 있음' : '표지에 넣기'}</button></div>`;
       }).join('')}</div></div>` : ''}
-      <p class="hint">${fmtDate(r.at)}에 평가했어요. 점수는 참고용이에요.</p>
+      <p class="hint">${fmtDate(r.at)}에 평가했어요.${r.history ? ` 지난 ${r.history}편의 게시 반응을 참고했어요.` : ''} 점수는 참고용이에요.</p>
     </div>`;
 }
 
@@ -108,7 +110,9 @@ async function run(app: App) {
   renderReview(app);
   setStatus(st, '이야기를 읽고 평가하는 중… (보통 20초 안팎)', 'busy');
   try {
-    const r = await reviewWork(w, ai, ctl.signal);
+    let history = '';
+    try { history = reviewHistory(await works.all(), w.id); } catch { /* the review works without it */ }
+    const r = await reviewWork(w, ai, ctl.signal, history);
     if (app.work().id !== w.id) return; // another work was opened meanwhile
     w.review = r;
     app.save();

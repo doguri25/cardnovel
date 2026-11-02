@@ -30,7 +30,7 @@ export const aiMessage = (e: unknown): string => {
 };
 
 /* ================= usage (tokens and pictures per call) ================= */
-export type UsageTag = 'compose' | 'rewrite' | 'outro' | 'summary' | 'review' | 'bible' | 'svg' | 'image' | 'refsheet' | 'cover' | 'other';
+export type UsageTag = 'compose' | 'rewrite' | 'outro' | 'summary' | 'review' | 'proof' | 'insight' | 'bible' | 'svg' | 'image' | 'refsheet' | 'cover' | 'tts' | 'other';
 export interface UsageEvent {
   provider: TextProvider;
   model: string;
@@ -39,6 +39,8 @@ export interface UsageEvent {
   input: number;
   output: number;
   images: number;
+  /** characters read aloud (AI narration), priced per 1,000 characters */
+  chars?: number;
 }
 let usageSink: ((u: UsageEvent) => void) | null = null;
 /** The app records every successful call through this (tokens, pictures), to show spending. */
@@ -128,14 +130,14 @@ const geminiScore = (id: string) => {
   return v * 10 + tier + unstable;
 };
 
-export interface ModelLists { text: ModelInfo[]; image: ModelInfo[] }
+export interface ModelLists { text: ModelInfo[]; image: ModelInfo[]; tts: ModelInfo[] }
 
 export async function listModels(provider: TextProvider, key: string, signal?: AbortSignal): Promise<ModelLists> {
   if (!key) throw new AiError('no_key');
   if (provider === 'anthropic') {
     const r = (await call(`${ANTHROPIC}/models?limit=100`, { headers: anthropicHeaders(key) }, signal)) as { data?: { id: string; display_name?: string }[] };
     const text = (r.data ?? []).map((m) => ({ id: m.id, label: m.display_name || m.id }));
-    return { text, image: [] };
+    return { text, image: [], tts: [] };
   }
   if (provider === 'openai') {
     const r = (await call(`${OPENAI}/models`, { headers: openaiHeaders(key) }, signal)) as { data?: { id: string; created?: number }[] };
@@ -144,7 +146,8 @@ export async function listModels(provider: TextProvider, key: string, signal?: A
       .filter((m) => /^(gpt-|o\d)/.test(m.id) && !/(image|audio|realtime|tts|transcribe|search|embedding|instruct|moderation|codex|computer-use)/.test(m.id))
       .map((m) => ({ id: m.id, label: m.id }));
     const image = all.filter((m) => /^gpt-image/.test(m.id)).map((m) => ({ id: m.id, label: m.id }));
-    return { text, image };
+    const tts = all.filter((m) => /tts/.test(m.id) && !/realtime|audio-preview/.test(m.id)).sort((a, b) => ttsScore(b.id) - ttsScore(a.id)).map((m) => ({ id: m.id, label: m.id }));
+    return { text, image, tts };
   }
   const r = (await call(`${GEMINI}/models?pageSize=1000`, { headers: geminiHeaders(key) }, signal)) as {
     models?: { name: string; displayName?: string; supportedGenerationMethods?: string[] }[];
@@ -157,8 +160,12 @@ export async function listModels(provider: TextProvider, key: string, signal?: A
     .sort((a, b) => geminiScore(id(b)) - geminiScore(id(a)))
     .map((m) => ({ id: id(m), label: m.displayName || id(m) }));
   const image = gen.filter(isImage).sort((a, b) => geminiScore(id(b)) - geminiScore(id(a))).map((m) => ({ id: id(m), label: m.displayName || id(m) }));
-  return { text, image };
+  const tts = gen.filter((m) => /gemini/.test(id(m)) && /tts/.test(id(m))).sort((a, b) => ttsScore(id(b)) - ttsScore(id(a))).map((m) => ({ id: id(m), label: m.displayName || id(m) }));
+  return { text, image, tts };
 }
+
+/** Speech models first that read Korean well and take a style instruction: gpt-4o-mini-tts, Gemini flash TTS. */
+const ttsScore = (id: string) => (/gpt-4o-mini-tts$|gpt-4o-mini-tts/.test(id) ? 50 : /flash.*tts/.test(id) ? 40 + geminiScore(id) / 100 : /pro.*tts/.test(id) ? 30 + geminiScore(id) / 100 : /tts-1-hd/.test(id) ? 20 : /tts-1/.test(id) ? 10 : 0) - (/\d{4}-\d{2}-\d{2}/.test(id) ? 1 : 0);
 
 /** A sensible default when the user has not picked a model yet. */
 export function pickDefault(provider: TextProvider | 'geminiImage' | 'openaiImage', list: ModelInfo[]): string {
@@ -347,6 +354,95 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
   }
   report({ provider: 'google', model, tag, images: 1, ...geminiUse(r) });
   return { mime: part.inlineData.mimeType || 'image/png', b64: part.inlineData.data };
+}
+
+/* ================= speech (AI narration) ================= */
+export interface SpeechRequest {
+  provider: 'openai' | 'google';
+  key: string;
+  model: string;
+  voice: string;
+  text: string;
+  /** how to read it (English works best with both providers) */
+  style?: string;
+  /** 1 = normal; OpenAI tts-1 takes it as is, the other models get it as part of the style */
+  speed?: number;
+  signal?: AbortSignal;
+}
+/** Encoded audio (OpenAI: MP3) to decode, or raw 16-bit PCM (Gemini) with its sample rate. */
+export type SpeechAudio = { kind: 'encoded'; data: ArrayBuffer; mime: string } | { kind: 'pcm'; data: ArrayBuffer; rate: number };
+
+export const OPENAI_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
+/** voices the older tts-1 models know */
+export const OPENAI_TTS1_VOICES = ['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'];
+export const GEMINI_VOICES = ['Kore', 'Aoede', 'Leda', 'Sulafat', 'Achernar', 'Vindemiatrix', 'Despina', 'Zephyr', 'Charon', 'Puck', 'Orus', 'Fenrir', 'Algenib', 'Gacrux', 'Enceladus', 'Iapetus', 'Schedar', 'Achird'];
+
+const paceWords = (speed = 1) => (speed >= 1.25 ? ' Read at a brisk, quick pace.' : speed > 1.05 ? ' Read at a slightly quick pace.' : '');
+
+/** fetch for a binary answer (audio); errors still come back as JSON and are classified like the others */
+async function callBinary(url: string, init: RequestInit, signal?: AbortSignal, retries = 2): Promise<ArrayBuffer> {
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, signal });
+    } catch (e) {
+      if (signal?.aborted) throw new AiError('cancelled');
+      if (attempt < retries) { await sleep(1500 * (attempt + 1), signal); continue; }
+      throw new AiError('network', String(e));
+    }
+    if (res.ok) return res.arrayBuffer();
+    const text = await res.text();
+    let body: unknown;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { error: { message: text.slice(0, 300) } }; }
+    const err = classify(res.status, body);
+    if (['rate_limited', 'overloaded', 'upstream'].includes(err.code) && !/insufficient_quota/i.test(err.message) && attempt < retries) {
+      const ra = Number(res.headers.get('retry-after'));
+      await sleep(ra > 0 && ra < 30 ? ra * 1000 : 2000 * (attempt + 1) ** 2, signal);
+      continue;
+    }
+    throw err;
+  }
+}
+
+/** One stretch of text read aloud. */
+export async function generateSpeech(req: SpeechRequest): Promise<SpeechAudio> {
+  const { provider, key, model, voice, text, style = '', speed = 1, signal } = req;
+  if (!key) throw new AiError('no_key');
+  if (!model) throw new AiError('bad_request', '낭독 모델을 골라 주세요');
+  if (!text.trim()) throw new AiError('empty');
+  if (provider === 'openai') {
+    const old = /^tts-1/.test(model);
+    const body: Record<string, unknown> = { model, input: text, voice: old && !OPENAI_TTS1_VOICES.includes(voice) ? 'alloy' : voice, response_format: 'mp3' };
+    if (old) { if (speed !== 1) body.speed = speed; } else if (style || speed !== 1) body.instructions = (style + paceWords(speed)).trim();
+    const data = await callBinary(`${OPENAI}/audio/speech`, { method: 'POST', headers: openaiHeaders(key), body: JSON.stringify(body) }, signal);
+    if (!data.byteLength) throw new AiError('empty');
+    report({ provider: 'openai', model, tag: 'tts', input: 0, output: 0, images: 0, chars: text.length });
+    return { kind: 'encoded', data, mime: 'audio/mpeg' };
+  }
+  const say = `${(style + paceWords(speed)).trim() || 'Read the following Korean text aloud naturally.'}\n\n${text}`;
+  const r = (await call(`${GEMINI}/models/${encodeURIComponent(model)}:generateContent`, {
+    method: 'POST', headers: geminiHeaders(key),
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: say }] }],
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
+    }),
+  }, signal)) as GeminiResponse & GeminiUsage;
+  if (r.promptFeedback?.blockReason) throw new AiError('refused', r.promptFeedback.blockReason);
+  const part = (r.candidates?.[0]?.content?.parts ?? []).find((p) => p.inlineData?.data);
+  if (!part?.inlineData) throw new AiError(/SAFETY|PROHIBITED/.test(r.candidates?.[0]?.finishReason ?? '') ? 'refused' : 'empty');
+  report({ provider: 'google', model, tag: 'tts', input: 0, output: 0, images: 0, chars: text.length });
+  const mime = part.inlineData.mimeType || '';
+  const bytes = b64ToBytes(part.inlineData.data);
+  if (/wav|mpeg|mp3|ogg/.test(mime)) return { kind: 'encoded', data: bytes.buffer as ArrayBuffer, mime };
+  const rate = Number((mime.match(/rate=(\d+)/) || [])[1]) || 24000;
+  return { kind: 'pcm', data: bytes.buffer as ArrayBuffer, rate };
+}
+
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
 }
 
 export function b64ToBlob(b64: string, mime: string): Blob {

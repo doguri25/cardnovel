@@ -108,6 +108,8 @@ export interface Review {
   strengths: string[];
   notes: ReviewNote[];
   titles: { title: string; hook: string; why: string }[];
+  /** how many past works' post numbers the review was told about */
+  history?: number;
 }
 
 export interface Work {
@@ -143,7 +145,29 @@ export interface Work {
   finished?: { designId: string; editUrl?: string; images: string[]; at: number; on: boolean };
   /** a copy of the series bible, so backups and exported files carry it */
   seriesBible?: import('./bible').SeriesBible;
+  /** where and when this episode was posted, and how it did (numbers typed in by the writer) */
+  posts?: PostRecord[];
 }
+
+export type PostKind = 'feed' | 'reels' | 'other';
+export const POST_KIND_NAME: Record<PostKind, string> = { feed: '인스타 게시물', reels: '인스타 릴스', other: '다른 곳' };
+export type PostMetric = 'reach' | 'likes' | 'comments' | 'saves' | 'shares' | 'follows';
+export const POST_METRICS: Record<PostMetric, string> = { reach: '도달·조회', likes: '좋아요', comments: '댓글', saves: '저장', shares: '공유', follows: '팔로우' };
+export interface PostRecord {
+  id: string;
+  /** when it was posted */
+  at: number;
+  kind: PostKind;
+  url: string;
+  /** null: not entered */
+  reach: number | null; likes: number | null; comments: number | null; saves: number | null; shares: number | null; follows: number | null;
+  note: string;
+  /** when the numbers were last updated */
+  updatedAt: number;
+}
+export const newPost = (at = Date.now()): PostRecord => ({
+  id: newId(), at, kind: 'feed', url: '', reach: null, likes: null, comments: null, saves: null, shares: null, follows: null, note: '', updatedAt: at,
+});
 
 export const OUTRO_KINDS: Record<OutroKind, { name: string; ask: string }> = {
   question: { name: '독자 질문', ask: '독자에게 던지는 질문 한 줄. 댓글로 생각을 남기고 싶어지게. 결말을 밝히지 않음' },

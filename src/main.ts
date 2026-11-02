@@ -16,6 +16,7 @@ import { captionText, cardFileName, download, fileBase, renderAll as renderAllFi
 import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, toast } from './ui/dom';
 import type { App } from './app';
 import { renderReview, wireReview } from './ui/review';
+import { renderProof, wireProof } from './ui/proof';
 import { openInstaPreview } from './ui/insta';
 import { openCoverCandidates } from './ui/cover';
 import { openBible } from './ui/bible';
@@ -75,20 +76,21 @@ const app: App = {
   settings: () => settings,
   saveSettings: () => saveSettings(settings),
   renderLook: () => renderLook(),
+  keepVersion: (reason) => keepVersion(reason),
 };
 const shareDeps: ShareDeps = { key: () => settings.shareKey };
 const finishDeps: FinishDeps = { login: () => goCanvaLogin(), refreshAll: () => { buildCardList(); scheduleRender(); } };
 const driveDeps: DriveDeps = { clientId: () => settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID, defaults: () => defaults(), reopenLibrary: () => void openLibrary() };
 let reviewTimer = 0;
-const scheduleReview = () => { clearTimeout(reviewTimer); reviewTimer = window.setTimeout(() => renderReview(app), 700); };
+const scheduleReview = () => { clearTimeout(reviewTimer); reviewTimer = window.setTimeout(() => { renderReview(app); renderProof(app); }, 700); };
 
 /* ================= undo (text and order, last 20 steps) ================= */
-interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind }
+interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind; caption: string }
 const undoStack: Snap[] = [];
 function snapshot(): Snap {
   const fields: Snap['fields'] = {};
   work.cards.forEach((c) => { fields[c.id] = { label: c.label, showLabel: c.showLabel, title: c.title, text: c.text, scene: c.scene, accent: c.accent }; });
-  return { order: work.cards.map((c) => c.id), fields, outroKind: work.outroKind };
+  return { order: work.cards.map((c) => c.id), fields, outroKind: work.outroKind, caption: work.caption };
 }
 function pushUndo() {
   undoStack.push(snapshot());
@@ -110,6 +112,7 @@ function undo() {
   work.cards = s.order.map((id) => byId.get(id)).filter((c): c is Card => !!c);
   work.cards.forEach((c) => Object.assign(c, s.fields[c.id]));
   work.outroKind = s.outroKind;
+  work.caption = s.caption;
   save(); renderAllUI();
   toast('되돌렸어요.');
 }
@@ -841,6 +844,7 @@ function renderAllUI() {
   renderLook();
   buildCardList();
   renderReview(app);
+  renderProof(app);
   renderFinishBox(app);
   void renderTextAI();
   void renderImageAI();
@@ -875,7 +879,7 @@ function openSettings() {
         <div class="field"><label for="setHandle">작가 핸들</label><input class="input" id="setHandle" value="${esc(settings.handle)}"></div>
       </div>
       <div class="field" style="margin-top:12px"><label for="setFollow">팔로우 문구 (마지막 장)</label><input class="input" id="setFollow" value="${esc(settings.follow)}"></div>
-      <div class="section-title">그림</div>
+      <div class="section-title">그림 · 낭독 가격</div>
       <div class="row three">
         <div class="field"><label for="priceGemini">Gemini 장당 $</label><input class="input" id="priceGemini" type="number" step="0.01" min="0" value="${settings.prices.gemini}"></div>
         <div class="field"><label for="priceOpenai">GPT 장당 $</label><input class="input" id="priceOpenai" type="number" step="0.01" min="0" value="${settings.prices.openai}"></div>
@@ -883,6 +887,10 @@ function openSettings() {
       </div>
       <div class="field" style="margin-top:12px"><label for="claudeTier">Claude SVG 품질</label>
         <select class="input" id="claudeTier"><option value="quick" ${settings.claudeArtTier === 'quick' ? 'selected' : ''}>빠름 (장당 몇 초)</option><option value="detailed" ${settings.claudeArtTier === 'detailed' ? 'selected' : ''}>정밀 (장당 30초 안팎)</option></select>
+      </div>
+      <div class="row two" style="margin-top:12px">
+        <div class="field"><label for="ttsOpenai">GPT 낭독 1,000자당 $</label><input class="input" id="ttsOpenai" type="number" step="0.005" min="0" value="${settings.ttsPrices.openai}"></div>
+        <div class="field"><label for="ttsGoogle">Gemini 낭독 1,000자당 $</label><input class="input" id="ttsGoogle" type="number" step="0.005" min="0" value="${settings.ttsPrices.google}"></div>
       </div>
       <p class="hint" style="margin-top:16px">가격은 자주 바뀌어요. 각 회사 가격표를 보고 맞춰 두면 그림 그리기 전에 예상 비용을 보여 줘요.</p>
       <div class="section-title">공유 링크</div>
@@ -964,6 +972,7 @@ function openSettings() {
         settings.follow = v('setFollow').trim();
         settings.prices = { gemini: Number(v('priceGemini')) || 0, openai: Number(v('priceOpenai')) || 0, claude: Number(v('priceClaude')) || 0 };
         settings.claudeArtTier = v('claudeTier') === 'detailed' ? 'detailed' : 'quick';
+        settings.ttsPrices = { openai: Math.max(0, Number(v('ttsOpenai')) || 0), google: Math.max(0, Number(v('ttsGoogle')) || 0) };
         await saveSettings(settings);
         close();
         void renderImageAI();
@@ -1149,6 +1158,10 @@ function wire() {
     if (isStaleChunkError(e) && online()) newVersionReady(app, 'missing');
     else toast('영상 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');
   }));
+  $('btnPosts').addEventListener('click', () => void import('./ui/posts').then((m) => m.openPosts(app)).catch((e) => {
+    if (isStaleChunkError(e) && online()) newVersionReady(app, 'missing');
+    else toast('게시 기록을 불러오지 못했어요.');
+  }));
   $('btnShareLink').addEventListener('click', () => void makeShareLink(app, shareDeps, $<HTMLButtonElement>('btnShareLink')));
   $('btnShareList').addEventListener('click', () => void openShareList(app, shareDeps));
   $('btnUndo').addEventListener('click', undo);
@@ -1244,6 +1257,7 @@ function wire() {
   $('libFile').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void importFile(f); });
   wireCardList();
   wireReview(app);
+  wireProof(app);
   wireFinishBox(app, finishDeps);
 
   // look
@@ -1288,7 +1302,7 @@ function wire() {
   $('btnNext').addEventListener('click', () => select((current + 1) % TOTAL_CARDS));
 
   // online state
-  const net = () => { $('offlinePill').hidden = online(); buildCardList(); renderReview(app); void renderImageAI(); scheduleRender(); };
+  const net = () => { $('offlinePill').hidden = online(); buildCardList(); renderReview(app); renderProof(app); void renderImageAI(); scheduleRender(); };
   window.addEventListener('online', net);
   window.addEventListener('offline', net);
 

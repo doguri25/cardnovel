@@ -2,10 +2,10 @@
 // once by content hash and shared between versions, so keeping many versions costs little.
 import { countChars, stripMarks, workTitle, type Work } from './model';
 
-export type VersionReason = 'manual' | 'timer' | 'compose' | 'draw' | 'drive' | 'canva' | 'restore' | 'leave';
+export type VersionReason = 'manual' | 'timer' | 'compose' | 'draw' | 'drive' | 'canva' | 'restore' | 'leave' | 'proof';
 export const REASON_NAME: Record<VersionReason, string> = {
   manual: '직접 저장', timer: '자동 (10분마다)', compose: '카드 구성 전', draw: '그림 다시 그리기 전',
-  drive: '드라이브 사본 불러오기 전', canva: 'Canva 마감본 받기 전', restore: '되돌리기 전', leave: '다른 작품으로 옮기기 전',
+  drive: '드라이브 사본 불러오기 전', canva: 'Canva 마감본 받기 전', restore: '되돌리기 전', leave: '다른 작품으로 옮기기 전', proof: '일괄 교정 적용 전',
 };
 
 export interface VersionMeta {

@@ -148,6 +148,24 @@
       <div id="reviewBody"></div>
     </div>
 
+    <div class="panel" id="proofPanel">
+      <div class="panel-head">
+        <h2>일괄 교정</h2>
+        <p class="hint">맞춤법 · 띄어쓰기 · 문장부호를 20장 전체에서 한 번에. 고친 곳을 보고 골라서 적용해요.</p>
+        <div class="proof-ctl">
+          <label class="sr-only" for="proofTone">말투</label>
+          <select class="input small" id="proofTone">
+            <option value="keep">말투 그대로</option>
+            <option value="hada">하다체로 통일 (~했다)</option>
+            <option value="haeyo">해요체로 통일 (~했어요)</option>
+          </select>
+          <button class="btn small tonal" id="btnProof" type="button">교정하기</button>
+        </div>
+      </div>
+      <span class="status" id="proofStatus"></span>
+      <div id="proofBody"></div>
+    </div>
+
   </section>
 
   <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="구역 너비 조절" title="끌어서 너비 조절"></div>
@@ -226,6 +244,7 @@
           <button class="btn" id="btnInsta" type="button">인스타 미리보기</button>
           <button class="btn" id="btnReels" type="button">릴스 영상 만들기</button>
           <button class="btn" id="btnShare" type="button">인스타로 공유 (20장)</button>
+          <button class="btn" id="btnPosts" type="button">게시 기록 · 성과</button>
           <div class="finish-box" id="finishBox"></div>
           <div class="share-row"><button class="btn" id="btnShareLink" type="button">공유 링크 만들기</button><button class="btn" id="btnShareList" type="button">링크 목록</button></div>
           <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요. 「공유 링크」는 인스타 없이도 넘겨 읽는 웹 페이지 주소를 만들어요.</p>

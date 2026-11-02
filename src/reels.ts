@@ -1,4 +1,4 @@
-// Reels video: the 20 cards as a 1080×1920 video (slide or fade between cards, slow zoom, optional music),
+// Reels video: the 20 cards as a 1080×1920 video (slide or fade between cards, slow zoom, optional AI narration and music),
 // encoded in the browser with WebCodecs. MP4 (H.264 / AAC) where the browser can, WebM otherwise.
 import {
   AudioBufferSource, BufferTarget, CanvasSource, getFirstEncodableAudioCodec, getFirstEncodableVideoCodec,
@@ -11,6 +11,9 @@ import { themeOfWork } from './themes';
 export const REEL_W = 1080;
 export const REEL_H = 1920;
 const TRANSITION = 0.45;
+/** narration starts this long after its card is fully on screen, and ends this long before the next card comes in */
+export const VOICE_LEAD = 0.3;
+export const VOICE_TAIL = 0.4;
 
 export type Transition = 'slide' | 'fade' | 'none';
 export interface ReelOptions {
@@ -18,8 +21,10 @@ export interface ReelOptions {
   seconds: number | 'auto';
   transition: Transition;
   zoom: boolean;
-  /** decoded music and its volume (0–1); looped and faded out at the end */
+  /** decoded music and its volume (0–1); looped and faded out at the end, quieter while the narration speaks */
   music?: { buffer: AudioBuffer; volume: number } | null;
+  /** AI narration: one clip per card (null = silent card); each card stays until its clip has been read */
+  voice?: { clips: (AudioBuffer | null)[]; volume?: number } | null;
   fps?: number;
 }
 export interface ReelResult { blob: Blob; ext: 'mp4' | 'webm'; video: VideoCodec; audio: AudioCodec | null; duration: number }
@@ -28,15 +33,19 @@ export class ReelError extends Error {
   constructor(public code: 'unsupported' | 'cancelled' | 'failed', message = '') { super(message || code); }
 }
 
-/** How long each card stays on screen. 'auto': about the time it takes to read it. */
-export function cardDurations(w: Work, seconds: ReelOptions['seconds']): number[] {
-  return w.cards.map((c) => {
+/** How long each card stays on screen. 'auto': about the time it takes to read it.
+ *  With narration (`voice`: seconds per card, null for silent cards) a card stays at least until its reading ends. */
+export function cardDurations(w: Work, seconds: ReelOptions['seconds'], voice?: (number | null)[] | null): number[] {
+  return w.cards.map((c, i) => {
+    const v = voice?.[i];
+    if (v) return Math.round(Math.max(seconds === 'auto' ? 2 : seconds, v + VOICE_LEAD + VOICE_TAIL + (i < w.cards.length - 1 ? TRANSITION : 0)) * 100) / 100;
     if (seconds !== 'auto') return seconds;
     if (c.kind === 'cover') return 3;
     if (c.kind === 'outro') return 3.5;
     return Math.min(6.5, Math.max(2.5, 1.6 + countChars(c.text + c.title) * 0.05));
   });
 }
+export const startsOf = (durs: number[]): number[] => durs.map((_, i) => durs.slice(0, i).reduce((a, b) => a + b, 0));
 export const totalDuration = (d: number[]): number => d.reduce((a, b) => a + b, 0);
 
 /** Picks the first codec pair this browser can encode: MP4 (H.264, HEVC…) first, WebM (VP9, VP8) as the fallback. */
@@ -51,20 +60,68 @@ export async function pickFormat(): Promise<{ ext: 'mp4' | 'webm'; video: VideoC
 }
 
 /** Music looped to the video's length, at the chosen volume, with a short fade in and a longer fade out. */
-export async function soundtrack(music: AudioBuffer, volume: number, duration: number): Promise<AudioBuffer> {
+export function soundtrack(music: AudioBuffer, volume: number, duration: number): Promise<AudioBuffer> {
+  return mixAudio(duration, { buffer: music, volume });
+}
+
+/** music level while the narration speaks, as a share of the chosen volume */
+export const DUCK = 0.3;
+
+/** The music's volume over time as (time, level) points: fade in, lower under each stretch of narration, fade out. */
+export function musicLevels(duration: number, volume: number, speech: [number, number][]): [number, number][] {
+  const v = Math.max(0, Math.min(1, volume)), low = v * DUCK;
+  // stretches less than a second apart stay lowered in between
+  const spans: [number, number][] = [];
+  for (const [a, b] of [...speech].sort((x, y) => x[0] - y[0])) {
+    const last = spans[spans.length - 1];
+    if (last && a - last[1] < 1) last[1] = Math.max(last[1], b); else spans.push([a, b]);
+  }
+  const pts: [number, number][] = [[0, 0]];
+  const add = (t: number, level: number) => {
+    const at = Math.min(duration, Math.max(t, pts[pts.length - 1][0]));
+    pts.push([at, level]);
+  };
+  const fadeIn = Math.min(0.6, duration / 4);
+  if (spans[0] && spans[0][0] < fadeIn + 0.3) add(fadeIn, low); else add(fadeIn, v);
+  for (const [a, b] of spans) {
+    if (pts[pts.length - 1][1] !== low) { add(a - 0.35, v); add(a - 0.05, low); }
+    add(b + 0.05, low);
+    add(b + 0.4, v);
+  }
+  const end = Math.max(pts[pts.length - 1][0], duration - 1.8);
+  add(end, pts[pts.length - 1][1]);
+  add(duration, 0);
+  return pts;
+}
+
+/** The video's sound: narration clips at their cards' times, and the music looped under them. */
+export async function mixAudio(duration: number, music?: { buffer: AudioBuffer; volume: number } | null, voice?: { clips: (AudioBuffer | null)[]; starts: number[]; volume?: number } | null): Promise<AudioBuffer> {
   const rate = 48000;
-  const ctx = new OfflineAudioContext(2, Math.ceil(duration * rate), rate);
-  const src = ctx.createBufferSource();
-  src.buffer = music;
-  src.loop = true;
-  const gain = ctx.createGain();
-  const v = Math.max(0, Math.min(1, volume));
-  gain.gain.setValueAtTime(0, 0);
-  gain.gain.linearRampToValueAtTime(v, Math.min(0.6, duration / 4));
-  gain.gain.setValueAtTime(v, Math.max(0.6, duration - 1.8));
-  gain.gain.linearRampToValueAtTime(0, duration);
-  src.connect(gain).connect(ctx.destination);
-  src.start(0);
+  const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(duration * rate)), rate);
+  const speech: [number, number][] = [];
+  voice?.clips.forEach((clip, i) => {
+    if (!clip) return;
+    const at = voice.starts[i] + VOICE_LEAD;
+    if (at >= duration) return;
+    const src = ctx.createBufferSource();
+    src.buffer = clip;
+    const g = ctx.createGain();
+    g.gain.value = voice.volume ?? 1;
+    src.connect(g).connect(ctx.destination);
+    src.start(at);
+    speech.push([at, at + clip.duration]);
+  });
+  if (music) {
+    const src = ctx.createBufferSource();
+    src.buffer = music.buffer;
+    src.loop = true;
+    const gain = ctx.createGain();
+    const pts = musicLevels(duration, music.volume, speech);
+    gain.gain.setValueAtTime(pts[0][1], pts[0][0]);
+    for (const [t, l] of pts.slice(1)) gain.gain.linearRampToValueAtTime(l, t);
+    src.connect(gain).connect(ctx.destination);
+    src.start(0);
+  }
   return ctx.startRendering();
 }
 
@@ -147,8 +204,8 @@ export async function makeReel(w: Work, o: ReelOptions, progress: (phase: 'cards
   const fmt = await pickFormat();
   if (!fmt) throw new ReelError('unsupported');
   const fps = o.fps ?? 30;
-  const durs = cardDurations(w, o.seconds);
-  const starts = durs.map((_, i) => durs.slice(0, i).reduce((a, b) => a + b, 0));
+  const durs = cardDurations(w, o.seconds, o.voice ? o.voice.clips.map((c) => c?.duration ?? null) : null);
+  const starts = startsOf(durs);
   const duration = totalDuration(durs);
   const frames = await prepareFrames(w, (n) => progress('cards', n, w.cards.length));
   if (signal?.aborted) throw new ReelError('cancelled');
@@ -163,7 +220,7 @@ export async function makeReel(w: Work, o: ReelOptions, progress: (phase: 'cards
 
   let audioCodec: AudioCodec | null = null;
   let audio: AudioBufferSource | null = null;
-  if (o.music) {
+  if (o.music || o.voice) {
     audioCodec = await getFirstEncodableAudioCodec(format.getSupportedAudioCodecs().filter((c) => c === 'aac' || c === 'opus'), { numberOfChannels: 2, sampleRate: 48000 });
     if (audioCodec) {
       audio = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_HIGH });
@@ -173,7 +230,7 @@ export async function makeReel(w: Work, o: ReelOptions, progress: (phase: 'cards
 
   await output.start();
   try {
-    if (audio && o.music) await audio.add(await soundtrack(o.music.buffer, o.music.volume, duration));
+    if (audio) await audio.add(await mixAudio(duration, o.music, o.voice ? { ...o.voice, starts } : null));
     const total = Math.round(duration * fps);
     for (let f = 0; f < total; f++) {
       if (signal?.aborted) throw new ReelError('cancelled');

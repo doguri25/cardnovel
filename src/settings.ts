@@ -29,7 +29,29 @@ export interface Settings {
   textPrices: Record<'anthropic' | 'google' | 'openai', { in: number; out: number }>;
   /** monthly spending limit in USD for warnings; 0 = none */
   monthlyBudget: number;
+  /** estimated narration prices in USD per 1,000 characters read */
+  ttsPrices: { openai: number; google: number };
+  /** last AI narration choices in the reels window */
+  narration: Narration;
 }
+
+export type NarrationStyle = 'calm' | 'tense' | 'warm' | 'plain' | 'acted';
+export interface Narration {
+  on: boolean;
+  provider: 'openai' | 'google';
+  /** remembered model and voice per provider */
+  model: { openai: string; google: string };
+  voice: { openai: string; google: string };
+  style: NarrationStyle;
+  /** 1, 1.15 or 1.3 */
+  speed: number;
+  /** read the series line and the follow words on the last card too */
+  readOutro: boolean;
+}
+export const DEFAULT_NARRATION: Narration = {
+  on: false, provider: 'openai', model: { openai: '', google: '' }, voice: { openai: 'nova', google: 'Kore' },
+  style: 'calm', speed: 1, readOutro: false,
+};
 
 export const DEFAULT_SETTINGS: Settings = {
   keys: { anthropic: '', google: '', openai: '' },
@@ -47,6 +69,8 @@ export const DEFAULT_SETTINGS: Settings = {
   brand: { ...DEFAULT_BRAND },
   textPrices: { anthropic: { in: 3, out: 15 }, google: { in: 0.3, out: 2.5 }, openai: { in: 1.25, out: 10 } },
   monthlyBudget: 0,
+  ttsPrices: { openai: 0.02, google: 0.04 },
+  narration: DEFAULT_NARRATION,
 };
 
 export async function loadSettings(): Promise<Settings> {
@@ -67,6 +91,12 @@ export async function loadSettings(): Promise<Settings> {
       openai: { ...DEFAULT_SETTINGS.textPrices.openai, ...(s.textPrices?.openai ?? {}) },
     },
     monthlyBudget: Number(s.monthlyBudget) || 0,
+    ttsPrices: { ...DEFAULT_SETTINGS.ttsPrices, ...(s.ttsPrices ?? {}) },
+    narration: {
+      ...DEFAULT_NARRATION, ...(s.narration ?? {}),
+      model: { ...DEFAULT_NARRATION.model, ...(s.narration?.model ?? {}) },
+      voice: { ...DEFAULT_NARRATION.voice, ...(s.narration?.voice ?? {}) },
+    },
   };
 }
 
