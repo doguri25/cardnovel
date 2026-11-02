@@ -127,7 +127,7 @@ Canva 마감은 `api/canva/finish-upload`(파일을 Vercel Blob에 바로 올리
 
 ### 자동 업데이트 (데스크톱 0.3.0부터)
 
-- 데스크톱: `desktop/updater.js`가 켜고 8초 뒤와 6시간마다 `api.github.com/repos/doguri25/cardnovel/releases/latest`를 읽어, 이 컴퓨터용 설치 파일(맥 dmg / 윈도우 exe / AppImage / deb)이 더 새 버전이면 묻고 받아 SHA-256을 확인한 뒤 설치한다. 윈도우는 NSIS를 `--updated /S --force-run`으로, 맥은 dmg에서 앱을 꺼내 응용 프로그램 폴더의 앱과 바꾸는 스크립트로(Apple 서명이 없어 시스템 업데이터를 못 씀), AppImage는 파일 교체, deb는 `pkexec apt-get install`. 「자동으로」를 고르면 받아 두었다가 앱을 닫을 때 설치. 버전 비교·파일 고르기는 `desktop/update-core.js`(`npm test`), CI는 패키징한 앱으로 `--update-check-only`를 돌려 확인.
+- 데스크톱: `desktop/updater.js`가 켜고 8초 뒤와 6시간마다 최신 릴리즈의 `latest.json`(CI가 `desktop/scripts/manifest.js`로 버전·설치 파일·SHA-256을 적어 올림, `releases/latest/download/latest.json`이라 GitHub API 요청 한도와 무관)을 읽어, 이 컴퓨터용 설치 파일(맥 dmg / 윈도우 exe / AppImage / deb)이 더 새 버전이면 묻고 받아 SHA-256을 확인한 뒤 설치한다. 윈도우는 NSIS를 `--updated /S --force-run`으로, 맥은 dmg에서 앱을 꺼내 응용 프로그램 폴더의 앱과 바꾸는 스크립트로(Apple 서명이 없어 시스템 업데이터를 못 씀), AppImage는 파일 교체, deb는 `pkexec apt-get install`. 「자동으로」를 고르면 받아 두었다가 앱을 닫을 때 설치. 버전 비교·파일 고르기는 `desktop/update-core.js`(`npm test`), CI는 방금 만든 설치 파일로 가짜 9.9.9 매니페스트를 띄우고 패키징한 앱으로 `--update-check-only`를 돌려 「더 새 버전 · 이 컴퓨터용 파일 · 체크섬 있음」을 확인.
 - 웹: 배포마다 서비스 워커 버전이 바뀐다. 새 버전이 자리를 잡으면 「지금 적용」 막대를 띄우고, 탭이 뒤로 가 있고 진행 중인 작업이 없으면 스스로 새로고침. 이전 버전의 캐시를 하나 남겨, 아직 바뀌지 않은 화면이 영상·Canva 기능을 열 수 있게 한다.
 
 아직 없는 것: 인스타 API 직접 게시(P1-3).

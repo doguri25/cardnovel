@@ -4,7 +4,9 @@
 // - macOS: the new app is copied out of the dmg over the old one (the app has no Apple Developer ID, so the
 //   system updater cannot be used); if the app runs from a place that cannot be written, the dmg is opened instead.
 // - Ubuntu: an AppImage replaces itself; a .deb is installed with the system's password prompt (pkexec).
-// Every download is checked against the SHA-256 that GitHub lists for the release file.
+// The latest release carries latest.json (written by CI): the version, the notes and each installer's SHA-256.
+// It is read from the release download address, which, unlike the GitHub API, has no per-address request limit.
+// Every download is checked against that SHA-256 before anything is installed.
 const { app, dialog, net, Notification, shell, BrowserWindow } = require('electron');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -12,8 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const core = require('./update-core.js');
 
-const REPO = 'doguri25/cardnovel';
-const LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
+const FEED = process.env.CARDNOVEL_UPDATE_FEED || 'https://github.com/doguri25/cardnovel/releases/latest/download/latest.json';
 const EVERY = 6 * 60 * 60 * 1000;
 
 const kind = core.installKind(process.platform, process.env);
@@ -27,7 +28,8 @@ let pending = null;
 let installing = false;
 
 async function latestRelease() {
-  const res = await net.fetch(LATEST, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'cardnovel-desktop' } });
+  const res = await net.fetch(FEED, { headers: { 'User-Agent': 'cardnovel-desktop' }, cache: 'no-store' });
+  if (res.status === 404) return null; // a release without a manifest (before 0.3.0): nothing to offer
   if (!res.ok) throw new Error(`GitHub ${res.status}`);
   return res.json();
 }
@@ -208,7 +210,7 @@ function startAutoUpdate() {
 async function dryRun() {
   const release = await latestRelease();
   const info = core.releaseInfo(release, kind, process.arch);
-  return { current: app.getVersion(), kind, latest: release.tag_name, file: info && info.name, sha256: !!(info && info.sha256), newer: !!(info && core.isNewer(info.version, app.getVersion())) };
+  return { current: app.getVersion(), kind, latest: release && release.version, file: info && info.name, sha256: !!(info && info.sha256), newer: !!(info && core.isNewer(info.version, app.getVersion())) };
 }
 
 module.exports = { check, startAutoUpdate, dryRun };

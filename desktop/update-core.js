@@ -29,22 +29,25 @@ const SUFFIX = {
   deb: () => '-linux-amd64.deb',
 };
 
-/** The installer of a GitHub release for this computer: { version, name, url, size, sha256, notes } or null. */
-function releaseInfo(release, kind, arch) {
-  if (!release || release.draft || release.prerelease || !SUFFIX[kind]) return null;
-  const version = parseVersion(release.tag_name || release.name);
+/**
+ * The installer for this computer from the release manifest (latest.json, written by CI next to the installers):
+ * { version, tag, notes, files: [{ name, size, sha256, url }] } → { version, name, url, size, sha256, notes } or null.
+ */
+function releaseInfo(manifest, kind, arch) {
+  if (!manifest || !SUFFIX[kind] || !Array.isArray(manifest.files)) return null;
+  const version = parseVersion(manifest.version || manifest.tag);
   if (!version) return null;
   const suffix = SUFFIX[kind](arch);
-  const asset = (release.assets || []).find((a) => a && typeof a.name === 'string' && a.name.endsWith(suffix));
-  if (!asset || !/^https:\/\/github\.com\//.test(asset.browser_download_url || '')) return null;
-  const sha = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest || '');
+  const f = manifest.files.find((x) => x && typeof x.name === 'string' && x.name.endsWith(suffix));
+  if (!f || !/^https:\/\/github\.com\/doguri25\/cardnovel\/releases\/download\//.test(f.url || '')) return null;
+  if (!/^[0-9a-f]{64}$/i.test(f.sha256 || '')) return null; // never install a file that cannot be checked
   return {
     version: version.join('.'),
-    name: asset.name.replace(/[^A-Za-z0-9._-]/g, '_'),
-    url: asset.browser_download_url,
-    size: Number(asset.size) || 0,
-    sha256: sha ? sha[1].toLowerCase() : null,
-    notes: notesSummary(release.body || ''),
+    name: f.name.replace(/[^A-Za-z0-9._-]/g, '_'),
+    url: f.url,
+    size: Number(f.size) || 0,
+    sha256: f.sha256.toLowerCase(),
+    notes: notesSummary(manifest.notes || ''),
   };
 }
 

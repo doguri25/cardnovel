@@ -57,9 +57,11 @@ jobs:
           APP=$(ls -d /tmp/inst/*.app)
           codesign --verify --deep --strict "$APP"
           "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --smoke-test
-          # the updater reads the latest GitHub release and finds this computer's installer
-          "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --update-check-only | tee /tmp/update.txt
-          grep -q '"file":"CardNovel-.*-mac-arm64.dmg"' /tmp/update.txt
+          # the updater reads a release manifest (here a local one for a pretend 9.9.9) and finds this computer's installer
+          mkdir -p /tmp/feed && node scripts/manifest.js dist desktop-v9.9.9 > /tmp/feed/latest.json
+          (cd /tmp/feed && python3 -m http.server 8765 >/dev/null 2>&1 &) ; sleep 1
+          CARDNOVEL_UPDATE_FEED=http://127.0.0.1:8765/latest.json "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --update-check-only | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-mac-arm64.dmg","sha256":true,"newer":true' /tmp/update.txt
           # what Gatekeeper says about a downloaded copy (the app has no Apple Developer ID, so it is rejected until "Open Anyway")
           xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "$APP"
           spctl --assess --type execute -vv "$APP" || true
@@ -71,8 +73,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           xvfb-run -a ./dist/linux-unpacked/cardnovel --smoke-test --no-sandbox
-          xvfb-run -a ./dist/linux-unpacked/cardnovel --update-check-only --no-sandbox | tee /tmp/update.txt
-          grep -q '"file":"CardNovel-.*-linux-amd64.deb"' /tmp/update.txt
+          mkdir -p /tmp/feed && node scripts/manifest.js dist desktop-v9.9.9 > /tmp/feed/latest.json
+          (cd /tmp/feed && python3 -m http.server 8765 >/dev/null 2>&1 &) ; sleep 1
+          CARDNOVEL_UPDATE_FEED=http://127.0.0.1:8765/latest.json xvfb-run -a ./dist/linux-unpacked/cardnovel --update-check-only --no-sandbox | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-linux-amd64.deb","sha256":true,"newer":true' /tmp/update.txt
       - uses: actions/upload-artifact@v4
         with:
           name: CardNovel-${{ matrix.name }}
@@ -92,6 +96,7 @@ jobs:
           sparse-checkout: |
             desktop/package.json
             desktop/RELEASE_NOTES.md
+            desktop/scripts/manifest.js
           sparse-checkout-cone-mode: false
       - name: Release tag from the desktop version
         id: tag
@@ -105,6 +110,8 @@ jobs:
         with:
           path: out
           merge-multiple: true
+      - name: Update manifest for the desktop updater (latest.json)
+        run: node desktop/scripts/manifest.js out "${{ steps.tag.outputs.name }}" desktop/RELEASE_NOTES.md > latest.json && mv latest.json out/ && head -c 400 out/latest.json
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
