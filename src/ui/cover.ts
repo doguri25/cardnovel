@@ -6,7 +6,7 @@ import type { Work } from '../model';
 import { cardHeight, ensureFonts, renderCard, srcOf, W } from '../render';
 import { confirmBox, esc, openModal, toast } from './dom';
 
-interface Slot { img?: string; svg?: string; mediaId?: string; error?: string; busy: boolean }
+interface Slot { img?: string; svg?: string; error?: string; busy: boolean }
 
 async function coverPreview(w: Work, pic: { img?: string; svg?: string }): Promise<string> {
   const draft: Work = { ...w, cards: w.cards.map((c, i) => (i === 0 ? { ...c, img: pic.img, svg: pic.svg } : c)) };
@@ -69,7 +69,6 @@ export async function openCoverCandidates(app: App, refs: () => CardRefs | null,
         if (s.img) c.img = s.img;
         if (s.svg) c.svg = s.svg;
         c.imgSource = ai.provider;
-        if (s.mediaId) c.canvaMediaId = s.mediaId; else delete c.canvaMediaId;
         c.imgPos = 'center';
         app.save(); onPicked(); app.scheduleRender();
         close();

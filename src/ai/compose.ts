@@ -116,9 +116,8 @@ export interface ImageAI { provider: 'gemini' | 'openai' | 'claude' | 'canvaai';
 export const artAspect = (w: Work, index = 1): number => W / artHeight(w, w.cards[index] ?? w.cards[1]);
 
 export interface ImageRef { mime: string; b64: string }
-/** Reference pictures for one card: the character sheet (keeps people the same) and the cover (keeps the look).
- *  Canva AI takes pictures already in Canva instead: `canvaCover` is the media id of a cover Canva AI drew. */
-export interface CardRefs { chars?: ImageRef | null; cover?: ImageRef | null; canvaCover?: string }
+/** Reference pictures for one card: the character sheet (keeps people the same) and the cover (keeps the look). */
+export interface CardRefs { chars?: ImageRef | null; cover?: ImageRef | null }
 
 /** Draws one card's picture. Returns a data URL (raster) or an SVG string (Claude). */
 /** Composition ideas for cover candidates, so the three pictures differ. */
@@ -128,15 +127,12 @@ export const COVER_VARIANTS = [
   'Composition idea: the main character from behind or in silhouette at the moment of tension.',
 ];
 
-export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string; mediaId?: string }> {
+export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string }> {
   const tag = variant ? 'cover' : undefined;
   if (ai.provider === 'canvaai') {
-    const cover = index !== 0 ? refs?.canvaCover : undefined;
-    const out = await canvaAiImage({
-      prompt: imagePrompt(w, index, { cover: !!cover }) + (variant ? `\n${variant}` : ''),
-      aspect: artAspect(w, index), refs: cover ? [cover] : [],
-    }, signal);
-    return { img: await shrinkImage(out.dataUrl), mediaId: out.mediaId };
+    // Canva's image API takes no reference pictures: the art style and the characters in every prompt keep the look
+    const out = await canvaAiImage({ prompt: imagePrompt(w, index) + (variant ? `\n${variant}` : ''), aspect: artAspect(w, index) }, signal);
+    return { img: await shrinkImage(out.dataUrl) };
   }
   if (ai.provider === 'claude') {
     const text = await generateText({

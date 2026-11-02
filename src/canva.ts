@@ -23,12 +23,13 @@ export const CANVA_MESSAGES: Record<string, string> = {
   design_import_throttled: 'Canva 가져오기 요청이 많아요. 잠시 뒤 다시 해 주세요.',
   design_import_already_in_progress: '이미 가져오는 중이에요. 잠시 뒤 다시 해 주세요.',
   download_failed: 'Canva에서 마감본 페이지를 받지 못했어요.',
-  mcp_unauthorized: 'Canva AI가 이 연결을 받아 주지 않았어요. 「연결 끊기」 후 Canva를 다시 연결해 주세요.',
-  mcp_forbidden: 'Canva AI를 쓸 권한이 없어요. Canva 앱 설정에서 AI 기능(MCP)을 허용했는지 확인해 주세요.',
-  mcp_unavailable: '지금 Canva AI에 닿지 않아요. 잠시 뒤 다시 해 주세요.',
-  mcp_error: 'Canva AI가 요청을 처리하지 못했어요.',
+  ai_not_enabled: 'Canva가 이 앱의 AI 그림 기능을 아직 켜 주지 않았어요. Canva 개발자 포털에서 이 앱(통합)의 이미지 생성 기능을 켜야 해요.',
+  ai_forbidden: '이 Canva 계정은 AI 그림을 쓸 수 없어요. Canva 팀 설정에서 「Canva AI」와 「Magic Media」가 허용돼 있는지 확인해 주세요.',
+  ai_scope: 'Canva 연결 권한이 부족해요. Canva를 다시 연결해 주세요.',
   ai_failed: 'Canva AI가 그림을 그리지 못했어요. 다시 해 보세요.',
   ai_quota: 'Canva AI 사용량을 다 썼어요. Canva 요금제의 AI 사용 한도를 확인해 주세요.',
+  ai_cooldown: 'Canva AI를 짧은 시간에 많이 써서 잠시 쉬어야 해요. 조금 뒤 다시 해 주세요.',
+  ai_unsafe: 'Canva가 이 장면 설명을 안전 기준에 맞지 않는다고 거절했어요. 카드 글이나 그림체를 조금 바꿔 다시 해 보세요.',
   ai_timeout: 'Canva AI가 너무 오래 걸려요. 잠시 뒤 다시 해 주세요.',
   ai_no_image: 'Canva AI가 그림 파일을 돌려주지 않았어요. 다시 해 보세요.',
   not_an_image: 'Canva AI가 그림 파일을 돌려주지 않았어요. 다시 해 보세요.',
@@ -39,12 +40,12 @@ export const canvaMessage = (e: unknown): string => {
   const known = CANVA_MESSAGES[code];
   if (!known) return `Canva 오류: ${(e as Error)?.message || code}`;
   // Canva's own words help with a refused or failed picture (a blocked prompt, a plan limit)
-  return (code === 'ai_failed' || code === 'mcp_error') && e instanceof CanvaError && e.message && e.message !== code ? `${known} (${e.message.slice(0, 140)})` : known;
+  return (code === 'ai_failed' || code === 'ai_no_image') && e instanceof CanvaError && e.message && e.message !== code ? `${known} (${e.message.slice(0, 140)})` : known;
 };
 /** The message for a failed picture, from Canva or from an AI provider. */
 export const pictureMessage = (e: unknown): string => (e instanceof CanvaError ? canvaMessage(e) : aiMessage(e));
 /** Errors after which drawing more pictures with Canva AI would fail the same way. */
-export const CANVA_STOP = ['not_connected', 'unavailable', 'server_not_configured', 'mcp_unauthorized', 'mcp_forbidden', 'ai_quota', 'too_many_requests', 'cancelled', 'network'];
+export const CANVA_STOP = ['not_connected', 'unavailable', 'server_not_configured', 'ai_not_enabled', 'ai_forbidden', 'ai_scope', 'ai_quota', 'ai_cooldown', 'too_many_requests', 'cancelled', 'network'];
 
 const API = '/api/canva';
 
@@ -82,8 +83,7 @@ export async function exportDesign(designId: string): Promise<string> {
 /* ---------- Canva AI: pictures drawn by Canva's own image AI, on the writer's Canva account ---------- */
 /** The picture shapes Canva AI draws (width / height). */
 export const CANVA_ASPECTS: [string, number][] = [
-  ['SQUARE_1_1', 1], ['LANDSCAPE_16_9', 16 / 9], ['LANDSCAPE_4_3', 4 / 3], ['LANDSCAPE_3_2', 3 / 2], ['LANDSCAPE_5_4', 5 / 4], ['LANDSCAPE_2_1', 2],
-  ['PORTRAIT_9_16', 9 / 16], ['PORTRAIT_3_4', 3 / 4], ['PORTRAIT_2_3', 2 / 3], ['PORTRAIT_4_5', 4 / 5], ['PORTRAIT_1_2', 1 / 2],
+  ['square', 1], ['landscape', 16 / 9], ['portrait', 9 / 16], ['landscape_3_2', 3 / 2], ['portrait_2_3', 2 / 3], ['portrait_4_5', 4 / 5],
 ];
 /** The Canva shape closest to a picture area (compared on a log scale, so 2:1 and 1:2 are equally far from square). */
 export function canvaAspect(ratio: number): string {
@@ -105,32 +105,43 @@ async function responseDataUrl(res: Response): Promise<string> {
   return `data:${res.headers.get('content-type') || 'image/png'};base64,${btoa(bin)}`;
 }
 
-export interface CanvaAiTiming { first: number; every: number; limit: number }
+export interface CanvaAiTiming { first: number; every: number; limit: number; /** how long to wait (ms) before retrying a rate-limited start */ retry?: number }
 /** How long to wait for a picture: Canva AI usually takes 10–40 seconds. */
-export const CANVA_AI_TIMING: CanvaAiTiming = { first: 4000, every: 3000, limit: 180000 };
+export const CANVA_AI_TIMING: CanvaAiTiming = { first: 4000, every: 3000, limit: 180000, retry: 8000 };
 
-/** Asks Canva AI for one picture and waits for it. `refs` are Canva media ids (an earlier Canva AI picture) to follow. */
-export async function canvaAiImage(opts: { prompt: string; aspect: number; refs?: string[] }, signal?: AbortSignal, timing = CANVA_AI_TIMING): Promise<{ dataUrl: string; mediaId?: string }> {
-  const body = { prompt: opts.prompt, aspect: canvaAspect(opts.aspect), refs: opts.refs ?? [] };
+const uuid = (): string => crypto.randomUUID?.() ?? '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16));
+
+/** The finished picture: straight from Canva when the browser may read it, else through /api/canva/page. */
+async function download(url: string, signal?: AbortSignal): Promise<string> {
+  try {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit', signal });
+    if (res.ok && /^image\//.test(res.headers.get('content-type') || '')) return await responseDataUrl(res);
+  } catch (e) {
+    if (signal?.aborted) throw new CanvaError('cancelled', String(e));
+  }
+  return responseDataUrl(await call(`/page?u=${encodeURIComponent(url)}`, { signal }));
+}
+
+/** Asks Canva AI for one picture (Canva's image generation API, on the writer's Canva account) and waits for it. */
+export async function canvaAiImage(opts: { prompt: string; aspect: number }, signal?: AbortSignal, timing = CANVA_AI_TIMING): Promise<{ dataUrl: string }> {
+  // one key per picture: a retried start returns the same job instead of drawing (and charging) twice
+  const body = { prompt: opts.prompt, aspect: canvaAspect(opts.aspect), key: uuid() };
   let jobId = '';
   for (let attempt = 0; !jobId; attempt++) {
     try {
       jobId = ((await (await post('/ai-image', body, signal)).json()) as { jobId: string }).jobId;
     } catch (e) {
-      // a short burst of requests (two cards at a time) can hit Canva's rate limit; wait it out twice
-      if (e instanceof CanvaError && e.code === 'too_many_requests' && attempt < 2) { await wait(8000 * (attempt + 1), signal); continue; }
+      // two cards at a time can touch Canva's rate limit (20 pictures a minute); wait it out twice
+      if (e instanceof CanvaError && e.code === 'too_many_requests' && attempt < 2) { await wait((timing.retry ?? 8000) * (attempt + 1), signal); continue; }
       throw e;
     }
   }
   const until = Date.now() + timing.limit;
   await wait(timing.first, signal);
   for (;;) {
-    const r = (await (await post('/ai-image-job', { jobId }, signal)).json()) as { status: string; url?: string; data?: string; mediaId?: string; message?: string; code?: string };
+    const r = (await (await post('/ai-image-job', { jobId }, signal)).json()) as { status: string; url?: string; message?: string; code?: string };
     if (r.status === 'failure') throw new CanvaError(r.code || 'ai_failed', r.message || '');
-    if (r.status === 'success' && (r.data || r.url)) {
-      const dataUrl = r.data ?? (await responseDataUrl(await call(`/page?u=${encodeURIComponent(r.url!)}`, { signal })));
-      return { dataUrl, mediaId: r.mediaId };
-    }
+    if (r.status === 'success' && r.url) return { dataUrl: await download(r.url, signal) };
     if (Date.now() > until) throw new CanvaError('ai_timeout');
     await wait(timing.every, signal);
   }

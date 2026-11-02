@@ -36,8 +36,6 @@ export interface Card {
   imgPos?: ImgPos;
   /** the Canva design this card's picture was made in, to export it again */
   canvaDesignId?: string;
-  /** the Canva media id of a picture Canva AI drew; the cover's is sent with the other cards to keep the look */
-  canvaMediaId?: string;
   layout?: CardLayout;
   /** type size multiplier for this card (0.85 – 1.3); the renderer still shrinks text that does not fit */
   textScale?: number;

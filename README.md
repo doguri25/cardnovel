@@ -40,11 +40,12 @@ Canva 토큰은 `/api/canva` 경로에만 붙는 암호화된 HttpOnly 쿠키에
 
 ### Canva AI 그림 (자동)
 
-그림 AI에서 「Canva AI (자동)」을 고르면, Claude가 Canva 커넥터로 그림을 그리는 것과 같은 방법으로 앱이 직접 그린다. 서버(`api/canva/ai-image`, `ai-image-job`)가 사용자의 Canva 토큰으로 Canva MCP 서버의 `generate-image`를 부르고 `get-generate-image-job`으로 끝날 때까지 기다린 뒤, 그림을 카드에 넣는다. 표지를 먼저 그리고, 표지의 Canva 미디어 ID를 나머지 카드의 참고 그림(`imageReferences`)으로 보내 그림체를 맞춘다. 카드 그림 자리 비율에 가장 가까운 Canva 비율(예: 1:1 카드의 위쪽 그림 → `LANDSCAPE_16_9`)로 그린다.
+그림 AI에서 「Canva AI (자동)」을 고르면 Canva의 이미지 생성 API(Connect API, 미리보기)로 카드 그림을 그린다. 서버(`api/canva/ai-image`)가 사용자의 Canva 토큰으로 `POST /rest/v1/image-generations`를 부르고, `ai-image-job`이 `GET /rest/v1/image-generations/{jobId}`로 끝났는지 본다. 다 그려지면 브라우저가 Canva의 내려받기 주소에서 그림을 받는다(브라우저가 직접 읽지 못하면 `api/canva/page`를 거쳐 흘려보냄). 카드 그림 자리 비율에 가장 가까운 Canva 비율(square·landscape 16:9·portrait 9:16·3:2·2:3·4:5)로 그린다.
 
-- 비용: 이 앱이 따로 돈을 쓰지 않고, 연결한 Canva 계정의 AI 사용량이 장마다 차감된다. 한도에 닿으면 「모든 그림 그리기」가 거기서 멈추고 그린 그림은 남는다.
-- MCP 주소: `https://api.canva.com/connect/v1/mcp`를 먼저, 없으면(404·연결 안 됨) `https://mcp.canva.com/mcp`를 쓴다. 다른 주소를 쓰려면 Vercel 환경 변수 `CANVA_MCP_URL`.
-- 확인 필요: Canva 개발자 포털에서 이 앱(Connect 통합)이 Canva AI·MCP를 쓸 수 있게 허용돼 있어야 할 수 있다. 막혀 있으면 앱이 「Canva AI를 쓸 권한이 없어요」(`mcp_forbidden`) 또는 「이 연결을 받아 주지 않았어요」(`mcp_unauthorized`)로 알려 준다.
+- 권한: 이미 받는 `asset:write` 범위로 충분하다. 사용자 계정에 Canva AI와 Magic Media가 허용돼 있어야 한다(`image_generation` 기능).
+- 미리보기 API: 이 앱처럼 공개 심사를 받지 않는 통합에서만 쓸 수 있다. Canva가 이 통합의 이미지 생성을 켜지 않았으면 「AI 그림 기능을 아직 켜 주지 않았어요」(`ai_not_enabled`)로 알려 준다.
+- 비용: 이 앱이 따로 돈을 쓰지 않고, 사용자의 Canva AI 사용량이 장마다 차감된다. 다 쓰면(`credit_quota_exceeded`)나 잠시 쉬어야 하면(`credit_quota_cooldown`) 「모든 그림 그리기」가 멈추고 그린 그림은 남는다. 처음 세 장이 모두 실패해도 멈추고 이유를 보여 준다.
+- 참고 그림: 이 API는 참고 그림을 받지 않는다. 그림체 지시문과 인물 생김새를 장마다 프롬프트에 넣어 그림체를 맞춘다. 같은 그림을 두 번 요청하지 않도록 장마다 `idempotency_key`를 보낸다.
 
 ### 공유 링크 설정
 
@@ -163,7 +164,7 @@ Canva 마감은 `api/canva/finish-upload`(파일을 Vercel Blob에 바로 올리
 | 미리보기에서 고치기 | 미리보기 카드를 누르면 그 카드 글로 바로 이동. 아래 작은 카드들은 끌어서 본문 순서를 바꿈 |
 | 보관함 | 제목·시리즈·카드 글로 찾기(초성 ㅁㅊ도), 최근 고친 순·만든 순·제목 순·시리즈·회차 순, 시리즈로 묶기 끄기. 삭제는 30일 휴지통으로(알림에서 바로 되살리기, 휴지통에서 되살리기·영구 삭제·비우기) |
 | 설정 탭 | AI 키(넣은 개수) · 새 작품 기본값 · 가격·품질 · 연결(공유 링크·드라이브) |
-| Canva AI 그림 | 그림 AI 「Canva AI (자동)」: 연결한 Canva 계정의 Canva AI가 표지부터 19장을 그리고, 표지를 참고해 그림체를 맞춤. 카드마다 「AI 그림」「다시」, 표지 후보 3장도 Canva AI로. 연결이 끊겼거나 권한·사용량이 막히면 그 이유와 「Canva 연결하기」를 보여 줌 |
+| Canva AI 그림 | 그림 AI 「Canva AI (자동)」: 연결한 Canva 계정의 Canva AI(이미지 생성 API)가 19장을 그리고, 그림체 지시문·인물 생김새를 장마다 넣어 그림체를 맞춤. 카드마다 「AI 그림」「다시」, 표지 후보 3장도 Canva AI로. 연결이 끊겼거나 권한·사용량이 막히면 그 이유와 「Canva 연결하기」를 보여 줌 |
 | 빠른 실행 | Ctrl+K / ⌘K (폰은 메뉴). 단계 이동, 만들기·평가·교정·점검·캡션·저장·공유·릴스·게시 기록, 보관함·새 작품·설정 탭, 테마·비율 바꾸기, 「7」처럼 번호로 카드 이동. 띄어쓰기·문장부호 무시, 초성 검색, 최근 실행한 것 먼저 |
 
 아직 없는 것: 인스타 API 직접 게시(P1-3).
@@ -205,7 +206,6 @@ src/
 api/canva/         Canva 서버리스 함수: login, callback, status, logout, design, export, return, finish-upload, finish-import, finish-export, page, ai-image, ai-image-job
 api/share/         공유 링크 함수: status, upload, create, delete, page(/s/<id> 뷰어)
 api/_lib/canva.ts  토큰 쿠키 암호화, PKCE, Canva API 호출, 돌아오기 서명 검증
-api/_lib/mcp.ts    Canva MCP 서버 호출(Streamable HTTP · JSON-RPC), Canva AI 결과 읽기
 api/_lib/share.ts  공유 열쇠 확인, 목록 검사, 뷰어 HTML
 sw/sw.template.js  오프라인 캐시 (빌드 때 파일 목록과 버전을 넣어 dist/sw.js로)
 public/

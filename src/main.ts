@@ -340,7 +340,7 @@ function renderRefBox() {
   $('refNote').textContent = p === 'gemini' || p === 'openai'
     ? (ref ? '모든 그림에 함께 보내 얼굴·머리·옷차림을 맞춰요.' : '인물 생김새를 고정하려면 기준 그림을 넣으세요. 모든 그림 요청에 함께 보내요.')
     : p === 'canvaai'
-      ? 'Canva AI는 표지 그림을 참고해 그림체를 맞춰요. 인물 기준 그림은 Gemini·GPT 이미지에서 쓰여요.'
+      ? 'Canva AI는 참고 그림을 받지 않아요. 그림체 지시문과 인물 생김새를 장마다 함께 보내 맞춰요. 인물 기준 그림은 Gemini·GPT 이미지에서 쓰여요.'
       : `${IMG_NAME[p]}에는 기준 그림을 보내지 않아요. Gemini·GPT 이미지에서 쓰여요.`;
 }
 
@@ -610,7 +610,7 @@ async function onCardAction(act: string, i: number) {
     save(); buildCardList(); scheduleRender();
     $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${j}"] button[data-act="${act}"]`)?.focus();
   } else if (act === 'clear') {
-    delete card.img; delete card.svg; delete card.imgSource; delete card.canvaMediaId;
+    delete card.img; delete card.svg; delete card.imgSource;
     save(); refreshRow(i); scheduleRender();
   } else if (act === 'upload') {
     uploadTarget = i;
@@ -680,11 +680,6 @@ async function rewrite(i: number) {
 /** Pictures sent along with a card's request: the character sheet first, then the cover (for the other cards). */
 function cardRefs(i: number): CardRefs | null {
   const p = work.imageAI.provider;
-  if (p === 'canvaai') {
-    // Canva AI follows the cover only when Canva AI drew it (the picture is then already in the writer's Canva)
-    const cover = work.cards[0];
-    return i !== 0 && cover.imgSource === 'canvaai' && cover.canvaMediaId ? { canvaCover: cover.canvaMediaId } : null;
-  }
   if (p !== 'gemini' && p !== 'openai') return null;
   const chars = work.style.refImage ? dataUrlParts(work.style.refImage) : null;
   const cover = i !== 0 && work.cards[0].img ? dataUrlParts(work.cards[0].img) : null;
@@ -709,7 +704,6 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
     if (out.img) card.img = out.img;
     if (out.svg) card.svg = out.svg;
     card.imgSource = ai.provider;
-    if (out.mediaId) card.canvaMediaId = out.mediaId; else delete card.canvaMediaId;
     card.imgPos = 'center';
     save();
     if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.`);
@@ -728,7 +722,7 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
 /** Shows why a picture failed; when the Canva connection is the problem, with the button that fixes it. */
 function artError(e: unknown, prefix = '') {
   const st = $('artStatus');
-  if (e instanceof CanvaError && (e.code === 'not_connected' || e.code === 'mcp_unauthorized')) {
+  if (e instanceof CanvaError && (e.code === 'not_connected' || e.code === 'ai_scope')) {
     st.className = 'status error';
     st.innerHTML = `${esc(prefix + canvaMessage(e))} <button class="btn tiny primary" type="button" data-a="canvaLogin">Canva 연결하기</button>`;
     st.querySelector('[data-a="canvaLogin"]')!.addEventListener('click', () => void goCanvaLogin());
@@ -756,7 +750,7 @@ async function drawAll() {
       ok: '그리기', detail: [
         '돈은 이 앱에서 따로 나가지 않아요. Canva 요금제의 AI 사용 한도 안에서 그려요.',
         '장당 20~40초쯤 걸려요. 한도에 닿으면 거기서 멈추고, 그린 그림은 남아요.',
-        '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
+        '그림체 지시문과 인물 생김새를 장마다 함께 보내 그림체를 맞춰요.',
       ],
     })
     : await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${((settings.prices[ai.provider] ?? 0) * targets.length).toFixed(2)}예요.`, {
@@ -779,6 +773,8 @@ async function drawAll() {
       failed++;
       if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = e;
       if (e instanceof CanvaError && CANVA_STOP.includes(e.code)) stop = e;
+      // the first three all failing means the rest would too: stop and show why, instead of failing every card
+      if (!stop && !done && failed >= 3) stop = e;
     }
     status();
   };
@@ -810,7 +806,6 @@ async function onUpload(file: File) {
   const card = work.cards[i];
   delete card.svg;
   card.img = await shrinkImage(url);
-  delete card.canvaMediaId;
   card.imgSource = work.imageAI.provider === 'canva' ? 'canva' : 'upload';
   card.imgPos = 'center';
   save(); refreshRow(i); scheduleRender();
@@ -852,7 +847,7 @@ async function runCompose() {
     const draft: Work = JSON.parse(JSON.stringify(work));
     const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split, seriesCtx);
     if (r.mode === 'split' || r.usedAI) {
-      draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; delete c.canvaMediaId; } });
+      draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; } });
     }
     if (ai && draft.outroKind !== 'none' && !draft.cards[TOTAL_CARDS - 1].text) {
       try { draft.cards[TOTAL_CARDS - 1].text = await writeOutro(draft, draft.outroKind, ai, composeCtl.signal); } catch { /* the writer can fill it in */ }

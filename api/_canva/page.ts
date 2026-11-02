@@ -11,7 +11,8 @@ export async function GET(req: Request): Promise<Response> {
     if (!res.ok) throw new HttpError(502, 'download_failed', `download ${res.status}`);
     const type = res.headers.get('content-type') || 'image/jpeg';
     if (!/^image\//.test(type)) throw new HttpError(502, 'not_an_image');
-    return new Response(await res.arrayBuffer(), { status: 200, headers: { 'content-type': type, 'cache-control': 'no-store' } });
+    // passed through as it arrives: a generated picture can be larger than a function may hold and send at once
+    return new Response(res.body, { status: 200, headers: { 'content-type': type, 'cache-control': 'no-store' } });
   } catch (e) {
     return errorResponse(e);
   }
