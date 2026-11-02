@@ -22,6 +22,7 @@ import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
 import { openVersions, type VersionDeps } from './ui/versions';
 import { isPhone, paintMini, setTab, wireMobile } from './ui/mobile';
+import { isStaleChunkError, newVersionReady, watchForUpdates } from './ui/update';
 import { deleteAllVersions, saveVersion, versionsAvailable, type VersionReason } from './versions';
 import { brandHint, openBrandEditor, openThemeEditor, setBrandOn } from './ui/look';
 import { monthTotal, onUsageEvent, openUsage, renderUsagePill } from './ui/usage';
@@ -30,6 +31,9 @@ import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
 import { afterLocalSave, renderDriveBox, startDriveSync, type DriveDeps } from './ui/drive';
 import { CANVA_MESSAGES, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, readLanding } from './canva';
+
+declare const __BUILD__: string;
+const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 
 /** Google OAuth client ID baked into the build (Vercel env VITE_GOOGLE_CLIENT_ID); the settings field overrides it. */
 const DEFAULT_GOOGLE_CLIENT_ID: string = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) || '';
@@ -892,7 +896,7 @@ function openSettings() {
       <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '…apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"></div>
       <p class="hint" style="margin-top:6px">Google Cloud 콘솔에서 만든 ‘웹 애플리케이션’ 클라이언트 ID예요. 승인된 자바스크립트 원본에 ${esc(location.origin)} 을 넣어야 해요.</p>
     </div>
-    <div class="toolbar" style="margin-top:16px"><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
+    <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)}</span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
   {
     size: 'mid',
     wire: (box, close) => {
@@ -1141,7 +1145,10 @@ function wire() {
   $('btnShare').addEventListener('click', () => void share());
   $('btnInsta').addEventListener('click', () => void openInstaPreview(app));
   // the video encoder is loaded only when it is used
-  $('btnReels').addEventListener('click', () => void import('./ui/reels').then((m) => m.openReels(app)).catch(() => toast('영상 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.')));
+  $('btnReels').addEventListener('click', () => void import('./ui/reels').then((m) => m.openReels(app)).catch((e) => {
+    if (isStaleChunkError(e) && online()) newVersionReady(app, 'missing');
+    else toast('영상 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');
+  }));
   $('btnShareLink').addEventListener('click', () => void makeShareLink(app, shareDeps, $<HTMLButtonElement>('btnShareLink')));
   $('btnShareList').addEventListener('click', () => void openShareList(app, shareDeps));
   $('btnUndo').addEventListener('click', undo);
@@ -1492,7 +1499,9 @@ async function start() {
     setStatus($('composeStatus'), '처음이라면 「설정」에서 AI 키를 하나 넣어 주세요. 나눈 원고는 키 없이도 카드로 만들 수 있어요.');
   }
   if ('serviceWorker' in navigator && import.meta.env.PROD) {
-    navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
+    navigator.serviceWorker.register('./sw.js')
+      .then((reg) => watchForUpdates(app, reg, () => !composeCtl && !artCtl && !artBusy.size && $('modal').hidden))
+      .catch(() => { /* offline support is optional */ });
   }
   await handleCanvaLanding();
   void startDriveSync(app, driveDeps);

@@ -2,6 +2,7 @@
 import type { App } from '../app';
 import { canvaMessage, canvaStatus, CanvaError } from '../canva';
 import { saveVersion } from '../versions';
+import { isStaleChunkError, newVersionReady } from './update';
 import { $, confirmBox, fmtDate, setStatus, toast } from './dom';
 
 export interface FinishDeps { login(): Promise<void>; refreshAll(): void }
@@ -53,7 +54,7 @@ export function wireFinishBox(app: App, deps: FinishDeps): void {
       if (connected === null) { tab?.close(); toast('Canva 연결은 배포된 앱(cardnovel.vercel.app)에서만 돼요.'); return; }
       if (!connected) { tab?.close(); toast('Canva 연결 화면으로 이동해요…'); await deps.login(); return; }
       try {
-        const { sendToCanva } = await import('../canva-finish');
+        const { sendToCanva } = await import('../canva-finish').catch((e) => { if (isStaleChunkError(e)) newVersionReady(app, 'missing'); throw e; });
         const designs = await sendToCanva(w, (step, n) => setStatus(st(), step === 'deck' ? `카드 파일 만드는 중 ${n}/20` : step === 'upload' ? '카드 파일 올리는 중…' : 'Canva가 디자인으로 바꾸는 중…', 'busy'));
         const d = designs[0];
         w.finished = { designId: d.id, editUrl: d.editUrl, images: w.finished?.images ?? [], at: w.finished?.at ?? Date.now(), on: w.finished?.on ?? false };
@@ -84,7 +85,7 @@ export async function pullFinished(app: App, deps: FinishDeps, designId: string)
   const st = () => document.getElementById('finishStatus') ?? $('artStatus');
   setStatus(st(), 'Canva에서 마감본을 내보내는 중…', 'busy');
   try {
-    const { fetchFinished } = await import('../canva-finish');
+    const { fetchFinished } = await import('../canva-finish').catch((e) => { if (isStaleChunkError(e)) newVersionReady(app, 'missing'); throw e; });
     const images = await fetchFinished(w, designId, (n, all) => setStatus(st(), `마감본 받는 중 ${n}/${all}`, 'busy'));
     if (!images.length) throw new CanvaError('export_failed');
     await saveVersion(w, 'canva').catch(() => undefined);

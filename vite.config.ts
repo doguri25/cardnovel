@@ -21,6 +21,8 @@ function serviceWorker(): Plugin {
 
 export default defineConfig({
   base: './',
+  // when this build was made, shown in the settings and used to tell versions apart
+  define: { __BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC') },
   build: { target: 'es2022', outDir: 'dist' },
   plugins: [serviceWorker()],
   test: { environment: 'jsdom', include: ['tests/**/*.test.ts'] },

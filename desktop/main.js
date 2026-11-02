@@ -9,6 +9,8 @@ const path = require('node:path');
 const APP_URL = process.env.CARDNOVEL_URL || 'https://cardnovel.vercel.app/';
 const APP_ORIGIN = new URL(APP_URL).origin;
 const SMOKE = process.argv.includes('--smoke-test');
+const UPDATE_DRY_RUN = process.argv.includes('--update-check-only');
+const updater = require('./updater.js');
 
 // Hosts that may open inside the app: the app itself, Canva, and the sign-in pages Canva sends people to.
 const IN_APP_HOSTS = [/\.canva\.com$/, /^canva\.com$/, /^accounts\.google\.com$/, /^appleid\.apple\.com$/, /\.facebook\.com$/, /^login\.microsoftonline\.com$/];
@@ -26,7 +28,7 @@ const inApp = (url) => {
 // Look like regular Chrome so Canva and sign-in pages do not treat the app as an unknown browser.
 app.userAgentFallback = app.userAgentFallback.replace(/\s(Electron|cardnovel-desktop|카드소설 제작소)\/\S+/g, '');
 
-const gotLock = SMOKE || app.requestSingleInstanceLock();
+const gotLock = SMOKE || UPDATE_DRY_RUN || app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
 /** @type {BrowserWindow | null} */
@@ -142,7 +144,13 @@ function buildMenu() {
     { role: 'windowMenu' },
     {
       role: 'help',
-      submenu: [{ label: '웹에서 열기', click: () => shell.openExternal(APP_URL) }],
+      submenu: [
+        { label: '업데이트 확인…', click: () => void updater.check(true) },
+        { label: `버전 ${app.getVersion()}`, enabled: false },
+        { type: 'separator' },
+        { label: '웹에서 열기', click: () => shell.openExternal(APP_URL) },
+        { label: '릴리즈 페이지', click: () => shell.openExternal('https://github.com/doguri25/cardnovel/releases') },
+      ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -154,10 +162,16 @@ app.on('second-instance', () => {
 
 if (process.platform === 'win32') app.setAppUserModelId('app.vercel.cardnovel');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (UPDATE_DRY_RUN) {
+    // CI: what the updater sees on GitHub for this build
+    try { console.log('update:', JSON.stringify(await updater.dryRun())); app.exit(0); } catch (e) { console.error('update:', e); app.exit(2); }
+    return;
+  }
   if (!gotLock) return;
   buildMenu();
   createWindow();
+  if (!SMOKE) updater.startAutoUpdate();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

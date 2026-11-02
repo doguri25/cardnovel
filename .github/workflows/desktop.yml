@@ -35,6 +35,9 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
+      - name: Updater unit tests
+        if: runner.os == 'Linux'
+        run: npm test
       - name: Smoke test (the app opens cardnovel.vercel.app and shows 20 cards)
         if: runner.os == 'Linux'
         run: xvfb-run -a npx electron . --smoke-test --no-sandbox
@@ -54,6 +57,9 @@ jobs:
           APP=$(ls -d /tmp/inst/*.app)
           codesign --verify --deep --strict "$APP"
           "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --smoke-test
+          # the updater reads the latest GitHub release and finds this computer's installer
+          "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --update-check-only | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-mac-arm64.dmg"' /tmp/update.txt
           # what Gatekeeper says about a downloaded copy (the app has no Apple Developer ID, so it is rejected until "Open Anyway")
           xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "$APP"
           spctl --assess --type execute -vv "$APP" || true
@@ -63,7 +69,10 @@ jobs:
         run: ./dist/win-unpacked/CardNovel.exe --smoke-test
       - name: Smoke test the packaged app (Ubuntu)
         if: runner.os == 'Linux'
-        run: xvfb-run -a ./dist/linux-unpacked/cardnovel --smoke-test --no-sandbox
+        run: |
+          xvfb-run -a ./dist/linux-unpacked/cardnovel --smoke-test --no-sandbox
+          xvfb-run -a ./dist/linux-unpacked/cardnovel --update-check-only --no-sandbox | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-linux-amd64.deb"' /tmp/update.txt
       - uses: actions/upload-artifact@v4
         with:
           name: CardNovel-${{ matrix.name }}

@@ -494,3 +494,4 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
   .modal { padding: 10px; align-items: flex-end; }
   .modal .box { max-height: calc(100dvh - 20px); border-radius: 16px; }
 }
+.update-bar { background: var(--surface-2); color: var(--text); }

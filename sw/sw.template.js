@@ -11,7 +11,12 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim()),
+    // keep the previous version's cache too: a page still running the old code can load its own parts from it
+    // until it switches (the app shows "new version" and reloads); older caches go
+    caches.keys().then((keys) => {
+      const others = keys.filter((k) => k !== VERSION);
+      return Promise.all(others.slice(0, -1).map((k) => caches.delete(k)));
+    }).then(() => self.clients.claim()),
   );
 });
 
