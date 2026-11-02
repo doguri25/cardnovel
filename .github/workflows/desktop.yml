@@ -1,0 +1,78 @@
+name: Desktop installers
+
+# Builds the macOS (.dmg), Windows (.exe) and Ubuntu (.deb, .AppImage) installers.
+# - push to the work branch touching desktop/: build and keep the files as run artifacts
+# - push a tag "desktop-v*": build and attach the files to a GitHub release
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/amazing-edison-vlnc9l', 'main']
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    tags: ['desktop-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, args: --mac }
+          - { name: Windows, os: windows-latest, args: --win }
+          - { name: Ubuntu, os: ubuntu-latest, args: --linux }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: Smoke test (the app opens cardnovel.vercel.app and shows 20 cards)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx electron . --smoke-test --no-sandbox
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CardNovel-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: 카드소설 제작소 ${{ github.ref_name }}
+          files: out/*
+          body: |
+            카드소설 제작소 데스크톱 설치 파일입니다. 앱은 https://cardnovel.vercel.app 을 띄우므로 웹이 바뀌면 자동으로 최신이 됩니다.
+
+            | 운영체제 | 파일 |
+            | --- | --- |
+            | macOS (Apple Silicon) | `CardNovel-*-mac-arm64.dmg` |
+            | macOS (Intel) | `CardNovel-*-mac-x64.dmg` |
+            | Windows | `CardNovel-*-win-x64.exe` |
+            | Ubuntu | `CardNovel-*-linux-amd64.deb` 또는 `CardNovel-*-linux-x86_64.AppImage` |
+
+            Apple·Microsoft 개발자 서명이 없어 처음 열 때 경고가 뜹니다. 맥은 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」, 윈도우는 「추가 정보」 → 「실행」을 누르세요.
