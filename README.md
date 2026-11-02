@@ -116,6 +116,15 @@ cd desktop && npm install && npm start
 
 Canva 마감은 `api/canva/finish-upload`(파일을 Vercel Blob에 바로 올리는 토큰), `finish-import`(Canva URL 가져오기, 끝나면 올린 파일 삭제), `finish-export`(쪽마다 JPG), `page`(내보낸 쪽 전달)를 쓴다. Canva가 글꼴을 바꾸거나 글 상자 위치가 조금 달라질 수 있어 Canva에서 한 번 확인하는 단계로 쓴다.
 
+### 네 번째로 넣은 것 (데스크톱 0.2.0과 함께)
+
+| 기능 | 내용 |
+| --- | --- |
+| 버전 기록 | 카드 구성·그림 다시 그리기·드라이브/Canva에서 받기·다른 작품으로 옮기기 전, 고치는 동안 10분마다 자동 저장(최근 30개), 이름 붙인 버전은 계속. 되돌리기·사본으로 열기·지금과 다른 카드 수. 별도 IndexedDB(`cardnovel-versions`)에 같은 그림은 한 번만 저장 |
+| 휴대폰 화면 | 760px 이하에서 아래 탭(이야기·카드·꾸미기·평가·내보내기), 카드는 한 장씩(위 작은 미리보기를 밀어 넘김), 위 메뉴 버튼, 입력 중엔 탭 숨김, 16px 입력(확대 방지), 안전 영역 |
+| 드라이브 이어서 열기 | 열 때·돌아올 때 드라이브와 비교. 다른 기기에서만 고쳤으면 최신본으로 이어서 열고(이전 상태는 버전으로), 양쪽에서 고쳤으면 물음. 다른 작품도 맞추고, 드라이브에만 있는 작품을 알려 줌. 마지막으로 맞춘 시각을 작품마다 기억해 「여기서 고침」과 「저기서 고침」을 구별 |
+| 최적화 | 고치는 카드를 먼저 그리고 바뀐 썸네일만 다시 그림, 보관함 썸네일은 표지가 바뀔 때만, 그림 많은 작품은 자동 저장 간격을 늘림, 서비스 워커가 빌드의 모든 파일을 미리 저장(오프라인에서 영상·Canva 기능까지)하고 배포마다 캐시 교체, 오프라인 다시 열기 버그 수정, 저장 공간 보존 요청·사용량 표시, 대화창 접근성(포커스 가두기·되돌리기), ←/→ 카드 이동, Ctrl/⌘+S 저장, 예기치 못한 오류 안내 |
+
 아직 없는 것: 인스타 API 직접 게시(P1-3).
 
 ## 구조
@@ -139,6 +148,7 @@ src/
   ai/review.ts     AI 평가 스키마·프롬프트·정리
   reels.ts         릴스 영상 (WebCodecs + mediabunny, MP4/WebM)
   usage.ts         사용량·비용 기록
+  versions.ts      버전 기록 (그림은 해시로 한 번만 저장)
   bible.ts         시리즈 설정집
   canva-finish.ts  Canva 마감: 글자를 따로 뽑은 파워포인트 만들기, 마감본 받기
   ai/bible.ts      설정집 AI 채우기·충돌 검사
@@ -147,8 +157,8 @@ api/canva/         Canva 서버리스 함수: login, callback, status, logout, d
 api/share/         공유 링크 함수: status, upload, create, delete, page(/s/<id> 뷰어)
 api/_lib/canva.ts  토큰 쿠키 암호화, PKCE, Canva API 호출, 돌아오기 서명 검증
 api/_lib/share.ts  공유 열쇠 확인, 목록 검사, 뷰어 HTML
+sw/sw.template.js  오프라인 캐시 (빌드 때 파일 목록과 버전을 넣어 dist/sw.js로)
 public/
-  sw.js            오프라인 캐시
   manifest.webmanifest, icons/, fonts/
 tests/             vitest 단위 테스트
 ```

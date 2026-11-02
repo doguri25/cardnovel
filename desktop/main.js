@@ -2,7 +2,8 @@
 // It shows the deployed web app, so the desktop version updates itself with the website and keeps
 // Canva working (same origin, same cookies). Canva's editor and sign-in open in app windows, so
 // "Return" lands back in this app's own storage, not in a separate browser.
-const { app, BrowserWindow, Menu, shell } = require('electron');
+const { app, BrowserWindow, Menu, screen, shell } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const APP_URL = process.env.CARDNOVEL_URL || 'https://cardnovel.vercel.app/';
@@ -53,10 +54,33 @@ function secureWebPreferences() {
   return { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false };
 }
 
+/* ---------- the window opens where it was closed ---------- */
+const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
+function loadWindowState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+    const b = { x: s.x, y: s.y, width: Math.max(960, s.width), height: Math.max(640, s.height) };
+    // only if it is still on a connected screen
+    const area = screen.getDisplayMatching(b).workArea;
+    const visible = b.x < area.x + area.width - 100 && b.x + b.width > area.x + 100 && b.y < area.y + area.height - 100 && b.y + b.height > area.y;
+    return visible ? { ...b, maximized: !!s.maximized } : { width: b.width, height: b.height, maximized: !!s.maximized };
+  } catch {
+    return { width: 1440, height: 940, maximized: false };
+  }
+}
+function saveWindowState(win) {
+  try {
+    const b = win.getNormalBounds();
+    fs.writeFileSync(stateFile(), JSON.stringify({ ...b, maximized: win.isMaximized() }));
+  } catch { /* not important */ }
+}
+
 function createWindow() {
+  const st = SMOKE ? { width: 1440, height: 940, maximized: false } : loadWindowState();
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 940,
+    ...('x' in st ? { x: st.x, y: st.y } : {}),
+    width: st.width,
+    height: st.height,
     minWidth: 960,
     minHeight: 640,
     title: '카드소설 제작소',
@@ -90,6 +114,8 @@ function createWindow() {
     setTimeout(() => { console.error('smoke: timed out'); app.exit(1); }, 60000);
   }
 
+  if (st.maximized) mainWindow.maximize();
+  mainWindow.on('close', () => { if (!SMOKE && mainWindow) saveWindowState(mainWindow); });
   mainWindow.loadURL(APP_URL);
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -125,6 +151,8 @@ function buildMenu() {
 app.on('second-instance', () => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
 });
+
+if (process.platform === 'win32') app.setAppUserModelId('app.vercel.cardnovel');
 
 app.whenReady().then(() => {
   if (!gotLock) return;

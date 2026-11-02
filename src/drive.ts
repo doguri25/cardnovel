@@ -1,6 +1,7 @@
 // Google Drive backup (browser only): Google Identity Services gives a 1-hour token for the drive.file scope,
 // which reaches only the files this app made — one folder, one JSON file per work.
 import type { Work } from './model';
+import { kv } from './store';
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
@@ -69,6 +70,7 @@ export async function connect(clientId: string): Promise<void> {
         if (!r.access_token) { rej(new DriveError('auth', r.error)); return; }
         token = { value: r.access_token, exp: Date.now() + (r.expires_in ?? 3600) * 1000 };
         try { sessionStorage.setItem('cardnovel.drive', JSON.stringify(token)); } catch { /* fine */ }
+        void kv.set('drive.linked', true);
         res();
       },
       error_callback: (e) => rej(new DriveError(e?.type === 'popup_failed_to_open' || e?.type === 'popup_closed' ? 'popup' : 'auth', e?.type)),
@@ -176,6 +178,7 @@ export async function uploadWork(w: Work, existing: DriveFile | null): Promise<D
     throw new DriveError('network');
   }
   if (!res.ok) throw new DriveError(res.status === 403 ? 'quota' : 'upstream', `${res.status}`);
+  await markSynced(w.id, w.updatedAt || 0);
   return (await res.json()) as DriveFile;
 }
 
@@ -192,4 +195,48 @@ export function compareCopies(file: DriveFile, local: Pick<Work, 'updatedAt'> | 
   if (!local) return 'drive_only';
   const d = Number(file.appProperties?.updatedAt || 0), l = local.updatedAt || 0;
   return d === l ? 'same' : d > l ? 'drive_newer' : 'local_newer';
+}
+
+/* ---------- continuing on another device ---------- */
+/** For each work, the save time both this device and Drive last agreed on; tells "changed here" from "changed there". */
+export const syncedMap = (): Promise<Record<string, number>> => kv.get<Record<string, number>>('drive.synced', {});
+export async function markSynced(id: string, updatedAt: number): Promise<void> {
+  const m = await syncedMap();
+  m[id] = updatedAt;
+  await kv.set('drive.synced', m);
+}
+export const driveTime = (f: DriveFile): number => Number(f.appProperties?.updatedAt || 0);
+
+/** What to do with one work: nothing, take Drive's copy, or ask (both sides changed, or never compared before). */
+export function decide(file: DriveFile | undefined, local: Pick<Work, 'updatedAt'>, syncedAt: number | undefined): 'none' | 'load' | 'ask' {
+  if (!file) return 'none';
+  const d = driveTime(file);
+  if (d <= (local.updatedAt || 0)) return 'none';
+  if (syncedAt === undefined || (local.updatedAt || 0) > syncedAt) return 'ask';
+  return 'load';
+}
+
+export interface SyncPlan {
+  current: 'none' | 'load' | 'ask';
+  currentFile?: DriveFile;
+  /** other works changed only on Drive: safe to update here */
+  update: DriveFile[];
+  /** other works changed on both sides: left alone, listed for the writer */
+  conflicts: DriveFile[];
+  /** works that are on Drive but not on this device */
+  onlyOnDrive: DriveFile[];
+}
+export function planSync(files: DriveFile[], locals: Pick<Work, 'id' | 'updatedAt'>[], synced: Record<string, number>, currentId: string): SyncPlan {
+  const byId = new Map(locals.map((w) => [w.id, w]));
+  const plan: SyncPlan = { current: 'none', update: [], conflicts: [], onlyOnDrive: [] };
+  for (const f of files) {
+    const id = f.appProperties?.cardnovelId;
+    if (!id) continue;
+    const local = byId.get(id);
+    if (!local) { plan.onlyOnDrive.push(f); continue; }
+    const d = decide(f, local, synced[id]);
+    if (id === currentId) { plan.current = d; if (d !== 'none') plan.currentFile = f; continue; }
+    if (d === 'load') plan.update.push(f); else if (d === 'ask') plan.conflicts.push(f);
+  }
+  return plan;
 }

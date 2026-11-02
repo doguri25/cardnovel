@@ -286,6 +286,19 @@ export async function ensureFonts(work: Work): Promise<void> {
   } catch { /* render with the fallback font */ }
 }
 
+/* ---------- what a card's picture depends on (to skip redrawing unchanged thumbnails) ---------- */
+const fp = (s?: string) => (s ? `${s.length}:${s.slice(-40)}` : '');
+export function lookSig(w: Work): string {
+  return JSON.stringify([w.theme, w.customTheme, w.font, w.ratio, w.series, w.handle, w.follow, w.episode, w.outroKind,
+    w.brand ? { ...w.brand, logo: fp(w.brand.logo) } : null, !!w.finished?.on]);
+}
+export function cardSig(w: Work, i: number, look = lookSig(w)): string {
+  const c = w.cards[i];
+  if (!c) return look;
+  return look + JSON.stringify([c.kind, c.label, c.showLabel, c.title, c.text, c.accent, c.layout, c.textScale, c.textPos, c.imgPos,
+    fp(c.img), fp(c.svg), w.finished?.on ? fp(w.finished.images[i]) : '']);
+}
+
 /* ---------- the card ---------- */
 export async function renderCard(ctx: CanvasRenderingContext2D, work: Work, index: number): Promise<void> {
   const card = work.cards[index];

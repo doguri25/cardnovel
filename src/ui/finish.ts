@@ -1,6 +1,7 @@
 // 「Canva에서 마감」: send the 20 cards to Canva as one editable design, then bring the finished pages back.
 import type { App } from '../app';
 import { canvaMessage, canvaStatus, CanvaError } from '../canva';
+import { saveVersion } from '../versions';
 import { $, confirmBox, fmtDate, setStatus, toast } from './dom';
 
 export interface FinishDeps { login(): Promise<void>; refreshAll(): void }
@@ -86,6 +87,7 @@ export async function pullFinished(app: App, deps: FinishDeps, designId: string)
     const { fetchFinished } = await import('../canva-finish');
     const images = await fetchFinished(w, designId, (n, all) => setStatus(st(), `마감본 받는 중 ${n}/${all}`, 'busy'));
     if (!images.length) throw new CanvaError('export_failed');
+    await saveVersion(w, 'canva').catch(() => undefined);
     w.finished = { designId, editUrl: w.finished?.editUrl, images: images.slice(0, w.cards.length), at: Date.now(), on: true };
     app.save(); renderFinishBox(app); deps.refreshAll();
     setStatus(st(), images.length === w.cards.length ? `마감본 ${images.length}장을 넣었어요.` : `마감본 ${images.length}장을 넣었어요. 카드는 ${w.cards.length}장이라 ${images.length < w.cards.length ? '모자란 카드는 원래 카드로' : '남는 쪽은 빼고'} 써요.`);

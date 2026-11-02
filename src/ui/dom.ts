@@ -30,10 +30,25 @@ let closeCurrent: Closer | null = null;
 export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; wire?: (box: HTMLElement, close: Closer) => void; onClose?: () => void } = {}): Closer {
   closeCurrent?.();
   const modal = $('modal'), box = $('modalBox');
+  const opener = document.activeElement as HTMLElement | null;
   box.className = 'box' + (opts.size ? ' ' + opts.size : '');
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
   box.innerHTML = html;
+  const heading = box.querySelector('h2');
+  if (heading) { heading.id = heading.id || 'modalTitle'; box.setAttribute('aria-labelledby', heading.id); } else box.removeAttribute('aria-labelledby');
   modal.hidden = false;
-  const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+  const focusables = () => Array.from(box.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter((el) => el.offsetParent !== null);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key !== 'Tab') return;
+    // keep Tab inside the dialog
+    const f = focusables();
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
   const onBackdrop = (e: MouseEvent) => { if (e.target === modal) close(); };
   const close: Closer = () => {
     modal.hidden = true;
@@ -42,12 +57,15 @@ export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; wire
     modal.removeEventListener('click', onBackdrop);
     if (closeCurrent === close) closeCurrent = null;
     opts.onClose?.();
+    // back to where the writer was, unless another dialog opened meanwhile
+    if (!closeCurrent && opener && document.contains(opener)) { try { opener.focus({ preventScroll: true }); } catch { /* fine */ } }
   };
   document.addEventListener('keydown', onKey);
   modal.addEventListener('click', onBackdrop);
   closeCurrent = close;
   opts.wire?.(box, close);
-  (box.querySelector('[autofocus]') as HTMLElement | null)?.focus();
+  const auto = box.querySelector<HTMLElement>('[autofocus]');
+  if (auto) auto.focus(); else if (!box.contains(document.activeElement)) { box.tabIndex = -1; box.focus({ preventScroll: true }); }
   return close;
 }
 

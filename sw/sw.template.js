@@ -1,6 +1,8 @@
-// Offline support: the app shell and fonts are cached, AI and other API calls always go to the network.
-const VERSION = 'cardnovel-v3';
-const SHELL = ['./', './index.html', './manifest.webmanifest', './fonts/maplestory-300.woff2', './fonts/maplestory-700.woff2', './icons/icon-192.png'];
+// Offline support: the app shell, every built file and the fonts are cached; AI and other API calls always go to
+// the network. vite.config.ts fills in the version (new with every build, so a deploy replaces the cache) and the
+// list of built files (including the parts loaded on demand: video, Canva deck).
+const VERSION = __VERSION__;
+const SHELL = ['./', './index.html', './manifest.webmanifest', './fonts/maplestory-300.woff2', './fonts/maplestory-700.woff2', './icons/icon-192.png', ...__ASSETS__];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
@@ -28,14 +30,15 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => { const copy = res.clone(); caches.open(VERSION).then((c) => c.put('./index.html', copy)); return res; })
-        .catch(() => caches.match('./index.html')),
+        .catch(() => caches.match('./index.html', { ignoreVary: true })),
     );
     return;
   }
 
   // assets (hashed file names) and fonts: cache first, fill the cache on first use
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    // ignoreVary: module scripts and styles are requested with CORS (an Origin header) but were cached without one
+    caches.match(req, { ignoreVary: true }).then((hit) => hit || fetch(req).then((res) => {
       if (res.ok || res.type === 'opaque') { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
       return res;
     })),

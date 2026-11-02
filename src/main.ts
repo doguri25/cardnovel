@@ -8,7 +8,7 @@ import {
   type Card, type CardLayout, type ImageProvider, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
-import { artHeight, cardHeight, ensureFonts, layoutOf, renderCard, srcOf, W } from './render';
+import { artHeight, cardHeight, cardSig, ensureFonts, layoutOf, lookSig, renderCard, srcOf, W } from './render';
 import { DEFAULT_SETTINGS, keyFor, loadSettings, maskKey, saveSettings, type Settings } from './settings';
 import { kv, works } from './store';
 import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
@@ -20,12 +20,15 @@ import { openInstaPreview } from './ui/insta';
 import { openCoverCandidates } from './ui/cover';
 import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
+import { openVersions, type VersionDeps } from './ui/versions';
+import { isPhone, paintMini, setTab, wireMobile } from './ui/mobile';
+import { deleteAllVersions, saveVersion, versionsAvailable, type VersionReason } from './versions';
 import { brandHint, openBrandEditor, openThemeEditor, setBrandOn } from './ui/look';
 import { monthTotal, onUsageEvent, openUsage, renderUsagePill } from './ui/usage';
 import { money } from './usage';
 import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
-import { afterLocalSave, renderDriveBox, type DriveDeps } from './ui/drive';
+import { afterLocalSave, renderDriveBox, startDriveSync, type DriveDeps } from './ui/drive';
 import { CANVA_MESSAGES, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, readLanding } from './canva';
 
 /** Google OAuth client ID baked into the build (Vercel env VITE_GOOGLE_CLIENT_ID); the settings field overrides it. */
@@ -107,24 +110,54 @@ function undo() {
   toast('되돌렸어요.');
 }
 
+/* ================= versions ================= */
+const TIMED_VERSION_MS = 10 * 60_000;
+let lastTimedVersion = Date.now();
+/** Keeps a version of the open work (never blocks or fails the action that asked for it). */
+async function keepVersion(reason: VersionReason, w: Work = work): Promise<void> {
+  if (!versionsAvailable()) return;
+  try { await saveVersion(w, reason); } catch { /* history is a convenience */ }
+}
+const versionDeps: VersionDeps = {
+  restore: async (v) => {
+    const keep = { id: work.id, createdAt: work.createdAt };
+    work = normalizeWork({ ...v, ...keep, updatedAt: Date.now() }, defaults());
+    undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+    save(); renderAllUI();
+  },
+  openCopy: async (v) => {
+    await keepVersion('leave');
+    const copy = normalizeWork({ ...v, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: `${workTitle(v)} · ${fmtDate(Date.now())} 버전 사본`, createdAt: Date.now(), updatedAt: Date.now() }, defaults());
+    await works.put(copy);
+    await openWork(copy, false);
+  },
+};
+
 /* ================= saving ================= */
-let persistTimer = 0, dirty = false;
+let persistTimer = 0, dirty = false, thumbSig = '';
+/** Rough size of the pictures kept in the work: a big work is written less often while typing. */
+const pictureBytes = (w: Work): number => w.cards.reduce((n, c) => n + (c.img?.length ?? 0) + (c.svg?.length ?? 0), 0)
+  + (w.finished?.images.reduce((n, x) => n + x.length, 0) ?? 0) + (w.style.refImage?.length ?? 0);
 function save() {
-  work.updatedAt = Date.now();
+  // always forward, even when the copy came from a device whose clock runs ahead: an edit here must read as newer
+  work.updatedAt = Math.max(Date.now(), (work.updatedAt || 0) + 1);
   dirty = true;
   $('savedAt').textContent = '저장 중…';
   clearTimeout(persistTimer);
-  persistTimer = window.setTimeout(() => void persist(true), 800);
+  persistTimer = window.setTimeout(() => void persist(true), pictureBytes(work) > 3_000_000 ? 1800 : 800);
 }
 async function persist(withThumb: boolean) {
   if (!dirty) return;
   dirty = false;
   try {
-    if (withThumb) { try { work.thumb = await makeThumb(); } catch { /* keep the old one */ } }
+    // the library thumbnail is the cover: redraw it only when the cover changed
+    const sig = cardSig(work, 0);
+    if (withThumb && (sig !== thumbSig || !work.thumb)) { try { work.thumb = await makeThumb(); thumbSig = sig; } catch { /* keep the old one */ } }
     await works.put(work);
     await kv.set('currentId', work.id);
     $('savedAt').textContent = `자동 저장됨 · ${fmtTime(Date.now())}`;
     afterLocalSave(app);
+    if (Date.now() - lastTimedVersion > TIMED_VERSION_MS) { lastTimedVersion = Date.now(); void keepVersion('timer'); }
   } catch {
     dirty = true;
     $('savedAt').textContent = '자동 저장 실패 — 보관함 「내보내기」로 백업해 두세요';
@@ -357,6 +390,7 @@ function buildCardList() {
   const thumbs = $('thumbs');
   thumbs.innerHTML = '';
   thumbCanvases.length = 0;
+  thumbSigs.length = 0;
   const H = cardHeight(work);
   work.cards.forEach((card, i) => {
     const row = document.createElement('div');
@@ -558,6 +592,7 @@ async function drawAll() {
   if (!targets.length) {
     if (!(await confirmBox('모든 카드에 그림이 있어요. 표지와 본문 19장을 모두 다시 그릴까요?', { ok: '모두 다시 그리기' }))) return;
     targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
+    await keepVersion('draw');
   }
   const price = settings.prices[ai.provider] ?? 0;
   const spent = await monthTotal(app);
@@ -638,6 +673,7 @@ async function runCompose() {
   const hasWork = work.cards.some((c) => c.text.trim());
   if (hasWork && !(await confirmBox('지금 카드를 새 이야기로 바꿀까요? 글이 그대로인 카드의 그림만 남겨요.', { ok: '바꾸기' }))) return;
 
+  if (hasWork) await keepVersion('compose');
   pushUndo();
   const before = work.cards.map((c) => c.text);
   composeCtl = new AbortController();
@@ -659,9 +695,10 @@ async function runCompose() {
     work = draft;
     current = 0;
     save(); renderAllUI();
+    void keepStorage();
     const styleNote = r.usedAI && work.style.preset === 'ai' ? ` 그림체 제안: ${work.style.name}.` : '';
     setStatus(st, `20장 구성을 마쳤어요.${styleNote} 아래에서 다듬고 그림을 그려 보세요.${!ai && r.mode === 'split' ? ' (AI 키가 없어 장면 설명·그림체 제안은 비워 두었어요.)' : ''}`);
-    $('cardsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (isPhone()) setTab('cards'); else $('cardsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     undoStack.pop();
     $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
@@ -706,7 +743,9 @@ async function startNextEpisode(fromId: string) {
       try { from.summary = await summarize(from, ai); await works.put(from); } catch { /* summarized again at compose time */ }
     }
   }
+  await keepVersion('leave');
   work = nextEpisodeWork(from, defaults(), nextEpisodeNumber(all, from.series));
+  lastTimedVersion = Date.now();
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   save(); renderAllUI();
   setStatus($('composeStatus'), `「${seriesLine(work)}」 작업을 시작했어요. 이번 회 줄거리를 넣고 「카드로 만들기」를 누르면 앞 회와 이어지게 써요. 그림체와 인물 기준 그림도 그대로 가져왔어요.`);
@@ -719,32 +758,50 @@ let renderTimer = 0, rendering = false, renderAgain = false;
 function scheduleRender() { clearTimeout(renderTimer); renderTimer = window.setTimeout(() => void renderPreview(), 60); }
 const stage = () => $<HTMLCanvasElement>('stage');
 
+/** What each thumbnail was last drawn from; unchanged cards are not redrawn. */
+const thumbSigs: string[] = [];
+const yieldToBrowser = () => new Promise<void>((r) => setTimeout(r, 0));
+let offCanvas: HTMLCanvasElement | null = null;
+
 async function renderPreview() {
   if (rendering) { renderAgain = true; return; }
   rendering = true;
   try {
+    // the card being edited first, so typing shows at once
     const H = cardHeight(work);
     const sc = stage();
     if (sc.height !== H) sc.height = H;
     document.documentElement.style.setProperty('--card-ar', `1080 / ${H}`);
     await ensureFonts(work);
     await renderCard(sc.getContext('2d')!, work, current);
-    const off = document.createElement('canvas');
-    off.width = W; off.height = H;
+    $('pagerText').textContent = `${current + 1} / ${TOTAL_CARDS}`;
+    $('mPagerText').textContent = `${current + 1} / ${TOTAL_CARDS}`;
+    paintMini();
+    document.querySelectorAll('#thumbs button').forEach((b, i) => b.classList.toggle('active', i === current));
+    document.querySelectorAll('.card-row').forEach((r, i) => r.classList.toggle('active', i === current));
+
+    // then the thumbnails that changed, one at a time, giving way to the next keystroke
+    if (!offCanvas) offCanvas = document.createElement('canvas');
+    const off = offCanvas;
+    if (off.width !== W) off.width = W;
+    if (off.height !== H) off.height = H;
     const octx = off.getContext('2d')!;
+    const look = lookSig(work);
+    const th = Math.round((112 * H) / W);
     for (let i = 0; i < work.cards.length; i++) {
+      if (renderAgain) break;
       const tc = thumbCanvases[i];
       if (!tc) continue;
-      const th = Math.round((112 * H) / W);
+      const sig = cardSig(work, i, look);
+      if (thumbSigs[i] === sig && tc.height === th) continue;
       if (tc.height !== th) tc.height = th;
-      await renderCard(octx, work, i);
+      if (i === current) octx.drawImage(sc, 0, 0); else await renderCard(octx, work, i);
       const x = tc.getContext('2d')!;
       x.clearRect(0, 0, tc.width, tc.height);
       x.drawImage(off, 0, 0, W, H, 0, 0, tc.width, tc.height);
+      thumbSigs[i] = sig;
+      await yieldToBrowser();
     }
-    $('pagerText').textContent = `${current + 1} / ${TOTAL_CARDS}`;
-    document.querySelectorAll('#thumbs button').forEach((b, i) => b.classList.toggle('active', i === current));
-    document.querySelectorAll('.card-row').forEach((r, i) => r.classList.toggle('active', i === current));
   } finally {
     rendering = false;
     if (renderAgain) { renderAgain = false; scheduleRender(); }
@@ -945,16 +1002,26 @@ async function openLibrary() {
       </div>
     </div>
     <div class="drive-box" id="driveBox"></div>
-    <p class="hint" style="margin:0 0 12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 같은 시리즈 이름끼리 묶이고, 「다음 회 만들기」는 그림체·인물 기준 그림·테마를 그대로 가져가요.</p>
+    <p class="hint" style="margin:0 0 12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 같은 시리즈 이름끼리 묶이고, 「다음 회 만들기」는 그림체·인물 기준 그림·테마를 그대로 가져가요. <span id="storageNote"></span></p>
     <div class="lib">${all.length ? groups.map(group).join('') : '<div class="empty-note">아직 저장된 작품이 없어요.</div>'}</div>`,
   {
     size: 'wide',
     wire: (box, close) => {
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
       void renderDriveBox(box.querySelector<HTMLElement>('#driveBox')!, app, driveDeps, close);
+      void (async () => {
+        try {
+          const est = await navigator.storage?.estimate?.();
+          const kept = await navigator.storage?.persisted?.();
+          const el = box.querySelector('#storageNote');
+          if (el && est?.usage !== undefined) el.textContent = `이 기기에 ${(est.usage / 1048576).toFixed(0)}MB 사용 중${kept ? ' · 브라우저가 지우지 않게 보관 중' : ' · 저장 공간이 모자라면 브라우저가 지울 수 있으니 드라이브 백업이나 내보내기를 해 두세요'}.`;
+        } catch { /* not supported */ }
+      })();
       box.querySelector('[data-a="new"]')!.addEventListener('click', async () => {
         await persist(true);
+        await keepVersion('leave');
         work = newWork(defaults());
+        lastTimedVersion = Date.now();
         current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
         save(); renderAllUI(); close();
         toast('새 작품을 시작했어요.');
@@ -986,6 +1053,7 @@ async function openLibrary() {
           close();
           if (!(await confirmBox('이 작품을 지울까요? 되돌릴 수 없어요.', { ok: '지우기' }))) { void openLibrary(); return; }
           await works.del(id);
+          void deleteAllVersions(id).catch(() => undefined);
           void openLibrary();
         });
       });
@@ -993,7 +1061,9 @@ async function openLibrary() {
   });
 }
 
-async function openWork(w: Work) {
+async function openWork(w: Work, leaveVersion = true) {
+  if (leaveVersion && work && w.id !== work.id) await keepVersion('leave');
+  lastTimedVersion = Date.now();
   await adoptBible(w);
   work = normalizeWork(w, defaults());
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
@@ -1007,6 +1077,9 @@ async function importFile(file: File) {
     const w = data?.work ?? data;
     if (!w || !Array.isArray(w.cards)) throw new Error('not a work');
     await persist(true);
+    await keepVersion('leave');
+    const existing = w.id ? await works.get(w.id) : null;
+    if (existing) await keepVersion('drive', existing);
     work = normalizeWork({ ...w, id: w.id || undefined }, defaults());
     if (!w.id) work.id = Date.now().toString(36);
     current = 0;
@@ -1072,9 +1145,23 @@ function wire() {
   $('btnShareLink').addEventListener('click', () => void makeShareLink(app, shareDeps, $<HTMLButtonElement>('btnShareLink')));
   $('btnShareList').addEventListener('click', () => void openShareList(app, shareDeps));
   $('btnUndo').addEventListener('click', undo);
+  $('btnVersions').addEventListener('click', () => void openVersions(app, versionDeps));
   document.addEventListener('keydown', (e) => {
     const tag = (e.target as HTMLElement)?.tagName;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); undo(); }
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    const dialog = !$('modal').hidden;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      // the browser's "save page" would save the app itself: save the work instead
+      e.preventDefault();
+      void app.flush().then(() => toast('저장했어요.'));
+      return;
+    }
+    if (dialog) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !typing) { e.preventDefault(); undo(); }
+    if (!typing && !e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      select((current + (e.key === 'ArrowRight' ? 1 : TOTAL_CARDS - 1)) % TOTAL_CARDS);
+    }
   });
 
   // story
@@ -1199,6 +1286,7 @@ function wire() {
   window.addEventListener('offline', net);
 
   wireSplitter();
+  wireMobile(app, () => work.cards.some((c) => c.kind === 'body' && c.text.trim()));
 }
 
 function wireSplitter() {
@@ -1359,6 +1447,33 @@ async function handleCanvaLanding() {
   await importFromCanva(i, l.design);
 }
 
+/* ================= safety nets ================= */
+function wireSafety() {
+  // an unexpected error should not look like lost work
+  let last = 0;
+  const report = (msg: string) => {
+    if (/ResizeObserver|AbortError|cancelled|Script error/i.test(msg)) return;
+    console.error(msg);
+    if (Date.now() - last < 10_000) return;
+    last = Date.now();
+    toast('잠깐 문제가 생겼어요. 작업은 저장돼 있어요. 계속되면 새로고침해 주세요.', 5000);
+  };
+  window.addEventListener('error', (e) => report(String(e.message || e.error)));
+  window.addEventListener('unhandledrejection', (e) => report(String((e.reason as Error)?.message || e.reason)));
+  // web fonts arriving after the first drawing: draw the thumbnails again with them
+  document.fonts?.addEventListener?.('loadingdone', () => { thumbSigs.length = 0; scheduleRender(); });
+}
+
+/** Asks the browser to keep this site's data (works live only here until backed up); once, after real work exists. */
+async function keepStorage() {
+  try {
+    if (!navigator.storage?.persist || (await navigator.storage.persisted())) return;
+    if (await kv.get<boolean>('storage.asked', false)) return;
+    await kv.set('storage.asked', true);
+    await navigator.storage.persist();
+  } catch { /* not supported */ }
+}
+
 /* ================= start ================= */
 async function start() {
   settings = await loadSettings();
@@ -1367,6 +1482,7 @@ async function start() {
   work = saved ? normalizeWork(saved, defaults()) : newWork(defaults());
   if (!saved) await works.put(work);
   wire();
+  wireSafety();
   onUsage((u) => void onUsageEvent(app, u));
   void renderUsagePill(app);
   $('offlinePill').hidden = online();
@@ -1379,6 +1495,7 @@ async function start() {
     navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
   }
   await handleCanvaLanding();
+  void startDriveSync(app, driveDeps);
 }
 
 void start();

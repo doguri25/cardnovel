@@ -22,6 +22,7 @@
   <span class="saved" id="savedAt" aria-live="polite"></span>
   <span class="offline-pill" id="offlinePill" hidden>오프라인</span>
   <div class="spacer"></div>
+  <button class="btn icon m-only" id="btnMenu" type="button" aria-label="메뉴" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg></button>
   <div class="actions">
     <button class="btn usage-pill" id="btnUsage" type="button" title="이번 달 AI 추정 비용">이번 달 $0</button>
     <button class="btn" id="btnLibrary" type="button">보관함</button>
@@ -31,6 +32,7 @@
   </div>
 </header>
 
+<div class="sync-bar" id="syncBar" role="status" hidden></div>
 <main class="workbench" id="workbench">
   <section class="work-col">
 
@@ -86,7 +88,7 @@
       <div class="panel-head">
         <h2><span class="step">Ⅱ</span>카드 편집</h2>
         <p class="hint">표지 1 · 본문 18 · 마지막 1. 본문은 공백 빼고 40~90자가 알맞습니다.</p>
-        <button class="btn small" id="btnUndo" type="button" disabled>되돌리기</button>
+        <div class="toolbar"><button class="btn small" id="btnUndo" type="button" disabled>되돌리기</button><button class="btn small" id="btnVersions" type="button">버전 기록</button></div>
       </div>
       <div class="stylebox" id="styleBox">
         <div>
@@ -115,7 +117,7 @@
           </div>
         </details>
       </div>
-      <div class="toolbar" style="margin-bottom:12px">
+      <div class="toolbar art-bar" id="artBar" style="margin-bottom:12px">
         <select class="input" id="imageProvider" aria-label="그림 AI" style="width:auto">
           <option value="gemini">Gemini 이미지</option>
           <option value="openai">GPT 이미지</option>
@@ -127,6 +129,10 @@
         <button class="btn tonal" id="btnArtAll" type="button">모든 그림 그리기</button>
         <button class="btn" id="btnArtStop" type="button" hidden>중단</button>
         <span class="status" id="artStatus"></span>
+      </div>
+      <div class="m-card-bar" id="mCardBar">
+        <canvas id="mStage" width="540" height="540" aria-label="지금 카드 미리보기 (옆으로 밀어 넘기기)"></canvas>
+        <div class="m-pager"><button class="btn icon" id="mPrev" type="button" aria-label="이전 카드"><svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button><span id="mPagerText">1 / 20</span><button class="btn icon" id="mNext" type="button" aria-label="다음 카드"><svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg></button></div>
       </div>
       <div class="cards" id="cardList"></div>
     </div>
@@ -157,7 +163,7 @@
         <div class="thumbs" id="thumbs"></div>
       </div>
 
-      <div class="stack" style="margin-top:16px">
+      <div class="stack look-fields" id="lookFields" style="margin-top:16px">
         <div class="field">
           <label>카드 비율</label>
           <div class="seg release" id="ratioSeg" role="group" aria-label="카드 비율">
@@ -205,7 +211,9 @@
             <input class="input" id="follow">
           </div>
         </div>
-        <div class="export">
+      </div>
+      <div class="export" id="exportBox">
+        <button class="btn primary m-only" id="btnSaveAllM" type="button">전체 ZIP 저장</button>
           <div class="field">
             <label for="exportFmt">이미지 형식</label>
             <select class="input" id="exportFmt">
@@ -220,12 +228,18 @@
           <div class="finish-box" id="finishBox"></div>
           <div class="share-row"><button class="btn" id="btnShareLink" type="button">공유 링크 만들기</button><button class="btn" id="btnShareList" type="button">링크 목록</button></div>
           <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요. 「공유 링크」는 인스타 없이도 넘겨 읽는 웹 페이지 주소를 만들어요.</p>
-        </div>
       </div>
     </div>
   </aside>
 </main>
 
+<nav class="m-tabs" id="mTabs" aria-label="작업 단계">
+  <button type="button" data-tab="story"><svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5zm9 1.5V8h3.5zM7 11h10v1.6H7zm0 3.4h10V16H7zm0 3.4h7v1.6H7z"/></svg>이야기</button>
+  <button type="button" data-tab="cards"><svg viewBox="0 0 24 24"><path d="M4 5h12v14H4zm14 2h2v12a2 2 0 0 1-2 2H8v-2h10z"/></svg>카드</button>
+  <button type="button" data-tab="look"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.5-1.1a1.6 1.6 0 0 1 1.2-2.7H16a5 5 0 0 0 5-5c0-4.3-4-7.6-9-7.6zM6.5 12a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>꾸미기</button>
+  <button type="button" data-tab="review"><svg viewBox="0 0 24 24"><path d="m12 17.3-6.2 3.7 1.6-7L2 9.2l7.1-.6L12 2l2.9 6.6 7.1.6-5.4 4.8 1.6 7z"/></svg>평가</button>
+  <button type="button" data-tab="export"><svg viewBox="0 0 24 24"><path d="M12 3 7 8l1.4 1.4L11 6.8V15h2V6.8l2.6 2.6L17 8zM5 17h14v3H5z"/></svg>내보내기</button>
+</nav>
 <div class="toast" id="toast" role="status"></div>
 <div class="modal" id="modal" hidden><div class="box" id="modalBox"></div></div>
 <input type="file" id="fileInput" accept="image/*" hidden>

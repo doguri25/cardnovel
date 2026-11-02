@@ -430,3 +430,67 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .finish-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .finish-line b { font-size: 13.5px; }
 .finish-box .note { margin: 0; }
+/* ---------- Drive continue bar ---------- */
+.sync-bar { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 24px; background: var(--primary-soft); color: var(--primary-soft-ink); font-size: 13px; border-bottom: 1px solid var(--line); }
+.sync-bar span { flex: 1; min-width: 200px; }
+.sync-bar .btn.icon { width: 28px; height: 28px; background: transparent; border-color: transparent; color: inherit; }
+/* ---------- phone layout ---------- */
+.m-only, .m-tabs, .m-card-bar { display: none; }
+#exportBox { margin-top: 16px; }
+.modal .box { max-height: calc(100dvh - 40px); overflow: auto; }
+@media (max-width: 760px) {
+  body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  body.m-typing { padding-bottom: 0; }
+  .appbar { gap: 8px; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); }
+  .appbar .actions { display: none; }
+  .appbar .saved { display: none; }
+  .brand h1 { font-size: 17px; }
+  .m-only { display: inline-flex; }
+  .workbench { padding: 12px 12px 16px; }
+  .panel { padding: 16px; border-radius: 14px; margin-bottom: 14px; }
+  .sync-bar { padding: 8px 12px; }
+
+  /* one tab at a time */
+  body[data-tab] #storyPanel, body[data-tab] #cardsPanel, body[data-tab] #reviewPanel, body[data-tab] .preview-col { display: none; }
+  body[data-tab="story"] #storyPanel, body[data-tab="cards"] #cardsPanel, body[data-tab="review"] #reviewPanel { display: block; }
+  body[data-tab="look"] .preview-col, body[data-tab="export"] .preview-col { display: block; }
+  body[data-tab="look"] #exportBox, body[data-tab="export"] #lookFields { display: none; }
+  body[data-tab="export"] #exportBox { margin-top: 12px; }
+  .preview-col .panel { padding: 12px; }
+
+  /* cards: the small preview and the one card being edited first, the art tools after */
+  body[data-tab="cards"] #cardsPanel { display: flex; flex-direction: column; }
+  #cardsPanel > .panel-head { order: 0; }
+  #cardsPanel > .m-card-bar { order: 1; }
+  #cardsPanel > .cards { order: 2; }
+  #cardsPanel > .art-bar { order: 3; margin: 14px 0 8px; }
+  #cardsPanel > .stylebox { order: 4; }
+  .m-card-bar { display: flex; flex-direction: column; gap: 6px; align-items: center; position: sticky; top: 52px; z-index: 5; background: var(--surface); padding: 4px 0 8px; }
+  .m-card-bar canvas { width: min(62vw, 240px); height: auto; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.25); touch-action: pan-y; background: #000; }
+  body.m-typing .m-card-bar canvas { width: min(40vw, 150px); }
+  #cardsPanel > .panel-head .hint { display: none; }
+  #cardsPanel > .panel-head { margin-bottom: 8px; }
+  .m-pager { display: flex; align-items: center; gap: 18px; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+  body[data-tab="cards"] .card-row:not(.active) { display: none; }
+  body[data-tab="cards"] .card-row { grid-template-columns: 1fr; }
+  body[data-tab="cards"] .card-row .num { flex-direction: row; justify-content: center; grid-row: auto; }
+  body[data-tab="cards"] .card-row .art { grid-column: 1; flex-direction: column; }
+  body[data-tab="cards"] .card-row .art .pic { width: 100%; height: auto; aspect-ratio: 16 / 9; }
+  body[data-tab="cards"] .card-row .body { grid-column: 1; }
+  body[data-tab="cards"] .card-row textarea.input { min-height: 120px; font-size: 16px; }
+  .card-row .input, .card-row select.input { font-size: 16px; } /* 16px stops iOS from zooming into fields */
+  textarea.input, input.input, select.input { font-size: 16px; }
+
+  /* tab bar */
+  .m-tabs { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    background: color-mix(in srgb, var(--surface) 94%, transparent); backdrop-filter: blur(10px); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  .m-tabs button { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 0; background: none; padding: 8px 0 6px; font-size: 11px; color: var(--muted); cursor: pointer; }
+  .m-tabs button svg { width: 22px; height: 22px; fill: currentColor; }
+  .m-tabs button.active { color: var(--primary); font-weight: 700; }
+  body.m-typing .m-tabs { display: none; }
+  .toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .m-menu { display: flex; flex-direction: column; gap: 8px; }
+  .m-menu .btn { justify-content: center; height: 44px; }
+  .modal { padding: 10px; align-items: flex-end; }
+  .modal .box { max-height: calc(100dvh - 20px); border-radius: 16px; }
+}
