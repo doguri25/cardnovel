@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#9E2B3E">
+  <meta name="description" content="이야기를 넣으면 20장 카드소설로 만들어 주는 앱">
+  <title>카드소설 제작소</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Noto+Serif+KR:wght@400;700&family=Gowun+Batang:wght@400;700&family=Nanum+Myeongjo:wght@400;800&display=swap">
+</head>
+<body>
+<header class="appbar">
+  <div class="brand">
+    <h1>카드소설 제작소</h1>
+    <span class="tag" id="sizeTag">카드 20장 · 1080×1080</span>
+  </div>
+  <span class="saved" id="savedAt" aria-live="polite"></span>
+  <span class="offline-pill" id="offlinePill" hidden>오프라인</span>
+  <div class="spacer"></div>
+  <div class="actions">
+    <button class="btn" id="btnLibrary" type="button">보관함</button>
+    <button class="btn" id="btnSettings" type="button">설정</button>
+    <button class="btn" id="btnCaption" type="button">캡션 복사</button>
+    <button class="btn primary" id="btnSaveAll" type="button">전체 ZIP 저장</button>
+  </div>
+</header>
+
+<main class="workbench" id="workbench">
+  <section class="work-col">
+
+    <div class="panel" id="storyPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅰ</span>이야기</h2>
+        <p class="hint">긴 원고, 짧은 줄거리, 이미 나눈 원고 모두 넣을 수 있어요.</p>
+      </div>
+      <div class="stack">
+        <div class="ai-row">
+          <select class="input" id="textProvider" aria-label="글 AI">
+            <option value="anthropic">Claude</option>
+            <option value="google">Gemini</option>
+            <option value="openai">GPT</option>
+          </select>
+          <select class="input" id="textModel" aria-label="글 AI 모델"></select>
+        </div>
+        <div class="field">
+          <label for="story">이야기</label>
+          <textarea class="input mono" id="story" rows="10" placeholder="원고나 줄거리를 붙여 넣으세요.
+
+이미 나눈 원고는 ‘표지 / 1페이지 … / 마지막 페이지’ 머리글을 쓰면 그대로 카드에 앉힙니다."></textarea>
+        </div>
+        <div class="mode-line">
+          <div class="seg" id="modeSeg" role="group" aria-label="입력 형태">
+            <button type="button" data-v="auto">자동</button>
+            <button type="button" data-v="long">긴 원고</button>
+            <button type="button" data-v="idea">줄거리</button>
+            <button type="button" data-v="split">나눈 원고</button>
+          </div>
+          <span class="hint" id="modeHint"></span>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="outroKind">마지막 장 덧붙임</label>
+            <select class="input" id="outroKind"></select>
+          </div>
+          <div class="field">
+            <label>마지막 장 고정 문구</label>
+            <p class="hint" id="outroFixedHint" style="padding-top:8px"></p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button class="btn primary" id="btnCompose" type="button">카드로 만들기</button>
+          <button class="btn" id="btnComposeStop" type="button" hidden>중단</button>
+          <button class="btn" id="btnExample" type="button">나눈 원고 형식 보기</button>
+          <span class="status" id="composeStatus"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="cardsPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅱ</span>카드 편집</h2>
+        <p class="hint">표지 1 · 본문 18 · 마지막 1. 본문은 공백 빼고 40~90자가 알맞습니다.</p>
+        <button class="btn small" id="btnUndo" type="button" disabled>되돌리기</button>
+      </div>
+      <div class="stylebox" id="styleBox">
+        <div>
+          <div class="name" id="styleName"></div>
+          <div class="desc" id="styleDesc"></div>
+        </div>
+        <select class="input" id="stylePreset" aria-label="그림체 바꾸기" style="width:auto"></select>
+        <details>
+          <summary>그림체 자세히 고치기</summary>
+          <div class="stack">
+            <div class="field"><label for="stylePrompt">그림 지시문 (영어 권장)</label><textarea class="input" id="stylePrompt" rows="3"></textarea></div>
+            <div class="field"><label for="styleChars">등장인물 생김새 (모든 카드에 같게)</label><textarea class="input" id="styleChars" rows="2"></textarea></div>
+          </div>
+        </details>
+      </div>
+      <div class="toolbar" style="margin-bottom:12px">
+        <select class="input" id="imageProvider" aria-label="그림 AI" style="width:auto">
+          <option value="gemini">Gemini 이미지</option>
+          <option value="openai">GPT 이미지</option>
+          <option value="claude">Claude SVG</option>
+          <option value="canva">Canva (준비 중)</option>
+          <option value="upload">직접 올리기</option>
+        </select>
+        <select class="input" id="imageModel" aria-label="그림 모델" style="width:auto;max-width:220px"></select>
+        <button class="btn tonal" id="btnArtAll" type="button">모든 그림 그리기</button>
+        <button class="btn" id="btnArtStop" type="button" hidden>중단</button>
+        <span class="status" id="artStatus"></span>
+      </div>
+      <div class="cards" id="cardList"></div>
+    </div>
+
+  </section>
+
+  <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="구역 너비 조절" title="끌어서 너비 조절"></div>
+
+  <aside class="preview-col">
+    <div class="panel">
+      <div class="well">
+        <div class="stage"><canvas id="stage" width="1080" height="1080" aria-label="현재 카드 미리보기"></canvas></div>
+        <div class="pager">
+          <button class="btn icon" id="btnPrev" type="button" aria-label="이전 카드"><svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button>
+          <span id="pagerText">1 / 20</span>
+          <button class="btn icon" id="btnNext" type="button" aria-label="다음 카드"><svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg></button>
+        </div>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
+
+      <div class="stack" style="margin-top:16px">
+        <div class="field">
+          <label>카드 비율</label>
+          <div class="seg release" id="ratioSeg" role="group" aria-label="카드 비율">
+            <button type="button" data-v="1:1">1:1</button>
+            <button type="button" data-v="4:5">4:5</button>
+            <button type="button" data-v="3:4">3:4</button>
+            <button type="button" data-v="9:16">9:16</button>
+          </div>
+          <p class="hint" id="ratioHint"></p>
+        </div>
+        <div class="field">
+          <label>카드 테마</label>
+          <div class="themes" id="themes"></div>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="font">서체</label>
+            <select class="input" id="font"></select>
+          </div>
+          <div class="field">
+            <label for="series">시리즈 이름</label>
+            <input class="input" id="series">
+          </div>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="handle">작가 핸들</label>
+            <input class="input" id="handle">
+          </div>
+          <div class="field">
+            <label for="follow">팔로우 문구</label>
+            <input class="input" id="follow">
+          </div>
+        </div>
+        <div class="export">
+          <div class="field">
+            <label for="exportFmt">이미지 형식</label>
+            <select class="input" id="exportFmt">
+              <option value="png">PNG (선명, 장당 1~2MB)</option>
+              <option value="jpg">JPG (가벼움, 인스타 권장)</option>
+            </select>
+          </div>
+          <button class="btn tonal" id="btnSaveOne" type="button">이 카드만 저장</button>
+          <button class="btn" id="btnShare" type="button">인스타로 공유 (20장)</button>
+          <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요.</p>
+        </div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status"></div>
+<div class="modal" id="modal" hidden><div class="box" id="modalBox"></div></div>
+<input type="file" id="fileInput" accept="image/*" hidden>
+<input type="file" id="libFile" accept="application/json,.json" hidden>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,994 @@
+import './styles.css';
+import { aiMessage, AiError, listModels, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
+import { compose, drawCard, rewriteCard, writeOutro, dataUrlParts, shrinkImage, type ImageAI, type TextAI } from './ai/compose';
+import {
+  BODY_COUNT, OUTRO_KINDS, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, workTitle,
+  type Card, type ImageProvider, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
+} from './model';
+import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
+import { cardHeight, ensureFonts, renderCard, srcOf, W } from './render';
+import { DEFAULT_SETTINGS, keyFor, loadSettings, maskKey, saveSettings, type Settings } from './settings';
+import { kv, works } from './store';
+import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
+import { captionText, cardFileName, download, fileBase, renderAll as renderAllFiles, renderToBlob, shareCards, zipAll, type ImgFormat } from './export';
+import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, toast } from './ui/dom';
+
+/* ================= state ================= */
+let settings: Settings = DEFAULT_SETTINGS;
+let work: Work;
+let current = 0;
+const modelLists: Partial<Record<TextProvider, ModelLists>> = {};
+const artBusy = new Set<string>();
+let composeCtl: AbortController | null = null;
+let artCtl: AbortController | null = null;
+let uploadTarget: number | null = null;
+
+const PROVIDER_NAME: Record<TextProvider, string> = { anthropic: 'Claude', google: 'Gemini', openai: 'GPT' };
+const IMG_NAME: Record<ImageProvider, string> = { gemini: 'Gemini', openai: 'GPT', claude: 'Claude SVG', canva: 'Canva', upload: '올림' };
+const KIND_NAME: Record<Card['kind'], string> = { cover: '표지', body: '본문', outro: '마지막' };
+
+const defaults = (): WorkDefaults => ({
+  series: settings.series, handle: settings.handle, follow: settings.follow,
+  textAI: { ...settings.textAI }, imageAI: { ...settings.imageAI },
+});
+
+/* ================= undo (text and order, last 20 steps) ================= */
+interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind }
+const undoStack: Snap[] = [];
+function snapshot(): Snap {
+  const fields: Snap['fields'] = {};
+  work.cards.forEach((c) => { fields[c.id] = { label: c.label, showLabel: c.showLabel, title: c.title, text: c.text, scene: c.scene, accent: c.accent }; });
+  return { order: work.cards.map((c) => c.id), fields, outroKind: work.outroKind };
+}
+function pushUndo() {
+  undoStack.push(snapshot());
+  if (undoStack.length > 20) undoStack.shift();
+  $<HTMLButtonElement>('btnUndo').disabled = false;
+}
+let typingBurst = 0;
+function pushUndoTyping() {
+  // one undo step per burst of typing
+  if (!typingBurst) pushUndo();
+  clearTimeout(typingBurst);
+  typingBurst = window.setTimeout(() => { typingBurst = 0; }, 1500);
+}
+function undo() {
+  const s = undoStack.pop();
+  $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
+  if (!s) return;
+  const byId = new Map(work.cards.map((c) => [c.id, c]));
+  work.cards = s.order.map((id) => byId.get(id)).filter((c): c is Card => !!c);
+  work.cards.forEach((c) => Object.assign(c, s.fields[c.id]));
+  work.outroKind = s.outroKind;
+  save(); renderAllUI();
+  toast('되돌렸어요.');
+}
+
+/* ================= saving ================= */
+let persistTimer = 0, dirty = false;
+function save() {
+  work.updatedAt = Date.now();
+  dirty = true;
+  $('savedAt').textContent = '저장 중…';
+  clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => void persist(true), 800);
+}
+async function persist(withThumb: boolean) {
+  if (!dirty) return;
+  dirty = false;
+  try {
+    if (withThumb) { try { work.thumb = await makeThumb(); } catch { /* keep the old one */ } }
+    await works.put(work);
+    await kv.set('currentId', work.id);
+    $('savedAt').textContent = `자동 저장됨 · ${fmtTime(Date.now())}`;
+  } catch {
+    dirty = true;
+    $('savedAt').textContent = '자동 저장 실패 — 보관함 「내보내기」로 백업해 두세요';
+  }
+}
+async function makeThumb(): Promise<string> {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = cardHeight(work);
+  await renderCard(c.getContext('2d')!, work, 0);
+  const t = document.createElement('canvas');
+  t.width = t.height = 180;
+  t.getContext('2d')!.drawImage(c, 0, 0, W, W, 0, 0, 180, 180);
+  return t.toDataURL('image/jpeg', 0.72);
+}
+window.addEventListener('beforeunload', () => { if (dirty) { clearTimeout(persistTimer); void persist(false); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) { clearTimeout(persistTimer); void persist(false); } });
+
+/* ================= AI choices ================= */
+function textAI(): TextAI | null {
+  const p = work.textAI.provider;
+  const key = keyFor(settings, p);
+  if (!key) return null;
+  return { provider: p, key, model: work.textAI.model || settings.models[p] };
+}
+function imageAI(): ImageAI | null {
+  const p = work.imageAI.provider;
+  if (p === 'canva' || p === 'upload') return null;
+  const key = keyFor(settings, p);
+  if (!key) return null;
+  const model = work.imageAI.model || (p === 'gemini' ? settings.models.geminiImage : p === 'openai' ? settings.models.openaiImage : settings.models.anthropic);
+  return { provider: p, key, model, quick: settings.claudeArtTier !== 'detailed' };
+}
+const online = () => navigator.onLine !== false;
+
+async function loadModels(p: TextProvider, force = false): Promise<ModelLists | null> {
+  const key = keyFor(settings, p);
+  if (!key) return null;
+  if (modelLists[p] && !force) return modelLists[p]!;
+  const cached = await kv.get<ModelLists | null>('models.' + p, null);
+  if (cached && !force) modelLists[p] = cached;
+  if (online()) {
+    try {
+      const fresh = await listModels(p, key);
+      modelLists[p] = fresh;
+      await kv.set('models.' + p, fresh);
+    } catch (e) {
+      if (e instanceof AiError && e.code === 'invalid_key') toast(`${PROVIDER_NAME[p]} ${aiMessage(e)}`);
+    }
+  }
+  return modelLists[p] ?? null;
+}
+
+function fillSelect(sel: HTMLSelectElement, list: ModelInfo[], value: string, empty: string) {
+  sel.innerHTML = list.length
+    ? list.map((m) => `<option value="${esc(m.id)}" ${m.id === value ? 'selected' : ''}>${esc(m.label)}</option>`).join('')
+    : `<option value="">${esc(empty)}</option>`;
+  if (value && list.length && !list.some((m) => m.id === value)) {
+    sel.insertAdjacentHTML('afterbegin', `<option value="${esc(value)}" selected>${esc(value)}</option>`);
+  }
+}
+
+async function renderTextAI() {
+  const p = work.textAI.provider;
+  $<HTMLSelectElement>('textProvider').value = p;
+  const sel = $<HTMLSelectElement>('textModel');
+  const key = keyFor(settings, p);
+  if (!key) { fillSelect(sel, [], '', `${PROVIDER_NAME[p]} 키 필요 — 설정에서 넣기`); return; }
+  const lists = await loadModels(p);
+  const list = lists?.text ?? [];
+  if (!work.textAI.model) work.textAI.model = settings.models[p] || pickDefault(p, list);
+  fillSelect(sel, list, work.textAI.model, '모델 목록을 불러오지 못했어요');
+}
+
+async function renderImageAI() {
+  const p = work.imageAI.provider;
+  $<HTMLSelectElement>('imageProvider').value = p;
+  const sel = $<HTMLSelectElement>('imageModel');
+  sel.hidden = p === 'canva' || p === 'upload';
+  $<HTMLButtonElement>('btnArtAll').disabled = p === 'canva' || p === 'upload' || !online();
+  if (sel.hidden) {
+    setStatus($('artStatus'), p === 'canva' ? 'Canva 연결은 다음 단계에서 들어가요. 지금은 「올리기」로 Canva에서 만든 그림을 넣을 수 있어요.' : '카드마다 「올리기」로 그림을 넣으세요.');
+    return;
+  }
+  const textP: TextProvider = p === 'gemini' ? 'google' : p === 'openai' ? 'openai' : 'anthropic';
+  if (!keyFor(settings, textP)) { fillSelect(sel, [], '', `${PROVIDER_NAME[textP]} 키 필요`); setStatus($('artStatus'), `${IMG_NAME[p]}로 그리려면 설정에서 ${PROVIDER_NAME[textP]} 키를 넣어 주세요.`); return; }
+  const lists = await loadModels(textP);
+  const list = p === 'claude' ? lists?.text ?? [] : lists?.image ?? [];
+  const remembered = p === 'gemini' ? settings.models.geminiImage : p === 'openai' ? settings.models.openaiImage : settings.models.anthropic;
+  if (!work.imageAI.model) work.imageAI.model = remembered || pickDefault(p === 'gemini' ? 'geminiImage' : p === 'openai' ? 'openaiImage' : 'anthropic', list);
+  fillSelect(sel, list, work.imageAI.model, '그림 모델이 없어요');
+  setStatus($('artStatus'), p === 'claude' ? `Claude가 SVG로 그려요 (${settings.claudeArtTier === 'detailed' ? '정밀, 장당 30초 안팎' : '빠름, 장당 몇 초'}).` : '표지를 먼저 그리고, 그 그림체에 맞춰 나머지를 그려요.');
+}
+
+/* ================= story panel ================= */
+function renderStoryPanel() {
+  $<HTMLTextAreaElement>('story').value = work.source.text || '';
+  setMode(work.source.mode || 'auto', false);
+  const sel = $<HTMLSelectElement>('outroKind');
+  sel.innerHTML = (Object.keys(OUTRO_KINDS) as OutroKind[]).map((k) => `<option value="${k}" ${k === work.outroKind ? 'selected' : ''}>${OUTRO_KINDS[k].name}</option>`).join('');
+  $('outroFixedHint').textContent = [work.series, work.follow, work.handle].filter(Boolean).join(' · ') || '오른쪽 칸에서 넣어요';
+}
+function setMode(m: InputMode, persist = true) {
+  work.source.mode = m;
+  document.querySelectorAll<HTMLButtonElement>('#modeSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === m));
+  updateModeHint();
+  if (persist) save();
+}
+function updateModeHint() {
+  const text = $<HTMLTextAreaElement>('story').value;
+  const m = work.source.mode;
+  const eff = m === 'auto' ? detectMode(text) : m;
+  const name = { long: '긴 원고 → 18장으로 압축·각색', idea: '줄거리 → 18장으로 살 붙이기', split: '나눈 원고 → 머리글대로 앉히기' }[eff];
+  const n = countChars(text);
+  $('modeHint').innerHTML = text.trim() ? `${m === 'auto' ? '자동 판단: ' : ''}<b>${name}</b> · ${n.toLocaleString()}자` : '';
+}
+
+/* ================= style ================= */
+function renderStyle() {
+  const s = work.style;
+  $('styleName').innerHTML = `그림체 · ${esc(s.name)}${s.preset === 'ai' ? '<span class="badge-ai">AI 제안</span>' : ''}`;
+  $('styleDesc').textContent = s.description || '';
+  const sel = $<HTMLSelectElement>('stylePreset');
+  sel.innerHTML = `<option value="">그림체 바꾸기…</option>` + STYLE_PRESETS.map((p) => `<option value="${p.preset}">${esc(p.name)}</option>`).join('');
+  $<HTMLTextAreaElement>('stylePrompt').value = s.prompt;
+  $<HTMLTextAreaElement>('styleChars').value = s.characters;
+}
+
+/* ================= cards ================= */
+const icons = {
+  up: '<svg viewBox="0 0 24 24"><path d="M7.4 15.4 6 14l6-6 6 6-1.4 1.4L12 10.8z"/></svg>',
+  down: '<svg viewBox="0 0 24 24"><path d="M16.6 8.6 18 10l-6 6-6-6 1.4-1.4 4.6 4.6z"/></svg>',
+};
+
+function cardRowHTML(card: Card, i: number): string {
+  const src = srcOf(card);
+  const isBody = card.kind === 'body', isCover = card.kind === 'cover', isOutro = card.kind === 'outro';
+  const p = work.imageAI.provider;
+  const canAI = p !== 'upload' && p !== 'canva';
+  const busy = artBusy.has(card.id);
+  const pos = card.imgPos || 'center';
+  return `
+    <div class="num">
+      ${isBody ? `<button type="button" data-act="up" aria-label="위로" ${i === 1 ? 'disabled' : ''}>${icons.up}</button>` : ''}
+      <span>${String(i + 1).padStart(2, '0')}</span>
+      ${isBody ? `<button type="button" data-act="down" aria-label="아래로" ${i === BODY_COUNT ? 'disabled' : ''}>${icons.down}</button>` : ''}
+    </div>
+    <div class="art">
+      <div class="pic ${src ? '' : 'empty'} ${busy ? 'busy' : ''}">${src ? `<img alt="" src="${src}">` : isOutro ? '그림 없어도 됨' : '그림 없음'}${src && card.imgSource ? `<span class="src">${esc(IMG_NAME[card.imgSource])}</span>` : ''}</div>
+      <div class="picbtns">
+        ${canAI ? `<button class="btn tiny tonal" type="button" data-act="ai" ${busy || !online() ? 'disabled' : ''}>${src ? '다시' : 'AI 그림'}</button>` : ''}
+        <button class="btn tiny" type="button" data-act="upload">올리기</button>
+        ${src ? '<button class="btn tiny" type="button" data-act="clear">지움</button>' : ''}
+        ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>아래</option></select>` : ''}
+      </div>
+    </div>
+    <div class="body">
+      <div class="top">
+        ${isCover ? `<input class="input" data-f="title" placeholder="이야기 제목" value="${esc(card.title)}">` : ''}
+        ${isBody ? `<input class="input" data-f="label" placeholder="머리말 (예: 전환 · 비워도 됨)" value="${esc(card.label)}">` : ''}
+        ${isOutro ? `<select class="input" data-f="outroKind" aria-label="덧붙임 종류">${(Object.keys(OUTRO_KINDS) as OutroKind[]).map((k) => `<option value="${k}" ${k === work.outroKind ? 'selected' : ''}>${OUTRO_KINDS[k].name}</option>`).join('')}</select>` : ''}
+        <label class="chk" title="${isBody ? '카드 위에 머리말을 보여 줍니다' : '카드 위에 시리즈 이름을 보여 줍니다'}"><input type="checkbox" data-f="showLabel" ${card.showLabel ? 'checked' : ''}> ${isBody ? '머리말' : '시리즈'}</label>
+        ${isBody ? `<label class="chk" title="제목과 막대를 강조색으로"><input type="checkbox" data-f="accent" ${card.accent ? 'checked' : ''}> 강조</label>` : '<span></span>'}
+        <button class="btn small" type="button" data-act="rewrite" ${!online() || (isOutro && work.outroKind === 'none') ? 'disabled' : ''}>${isCover ? '훅 다시' : '다시 쓰기'}</button>
+      </div>
+      ${isBody ? `<input class="input" data-f="title" placeholder="소제목 (선택)" value="${esc(card.title)}">` : ''}
+      ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문'}">${esc(card.text)}</textarea>`}
+      ${isOutro ? `<div class="fixed">고정: ${esc([work.follow, work.handle].filter(Boolean).join(' · ') || '오른쪽 칸에서 팔로우 문구와 핸들을 넣으세요')}</div>` : ''}
+      <div class="meta"><span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span><span class="count"></span></div>
+    </div>`;
+}
+
+function updateCount(row: HTMLElement, card: Card) {
+  const el = row.querySelector('.count');
+  if (!el) return;
+  const n = countChars(card.text);
+  const [lo, hi] = card.kind === 'cover' ? [0, 30] : card.kind === 'outro' ? [0, 60] : [40, 90];
+  const bad = n > hi || (card.kind === 'body' && n > 0 && n < lo);
+  el.textContent = `${n}자` + (n > hi ? ' · 조금 길어요' : bad ? ' · 조금 짧아요' : '');
+  el.classList.toggle('over', bad);
+}
+
+const thumbCanvases: HTMLCanvasElement[] = [];
+
+function buildCardList() {
+  const list = $('cardList');
+  list.innerHTML = '';
+  const thumbs = $('thumbs');
+  thumbs.innerHTML = '';
+  thumbCanvases.length = 0;
+  const H = cardHeight(work);
+  work.cards.forEach((card, i) => {
+    const row = document.createElement('div');
+    row.className = `card-row ${card.kind}` + (i === current ? ' active' : '');
+    row.dataset.i = String(i);
+    row.innerHTML = cardRowHTML(card, i);
+    list.appendChild(row);
+    updateCount(row, card);
+
+    const tb = document.createElement('button');
+    tb.type = 'button';
+    tb.setAttribute('aria-label', `${i + 1}번 카드`);
+    const tc = document.createElement('canvas');
+    tc.width = 112; tc.height = Math.round((112 * H) / W);
+    tb.appendChild(tc);
+    thumbs.appendChild(tb);
+    thumbCanvases.push(tc);
+    tb.addEventListener('click', () => select(i));
+  });
+}
+
+function refreshRow(i: number) {
+  const row = $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${i}"]`);
+  if (!row) return;
+  row.innerHTML = cardRowHTML(work.cards[i], i);
+  updateCount(row, work.cards[i]);
+}
+
+function select(i: number) {
+  if (i === current) return;
+  current = Math.max(0, Math.min(TOTAL_CARDS - 1, i));
+  document.querySelectorAll('.card-row').forEach((r, k) => r.classList.toggle('active', k === current));
+  scheduleRender();
+}
+
+function wireCardList() {
+  const list = $('cardList');
+  const rowOf = (e: Event) => (e.target as HTMLElement).closest<HTMLElement>('.card-row');
+  list.addEventListener('focusin', (e) => { const r = rowOf(e); if (r) select(Number(r.dataset.i)); });
+  list.addEventListener('click', (e) => {
+    const r = rowOf(e); if (!r) return;
+    const i = Number(r.dataset.i);
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-act]');
+    if (!b) { select(i); return; }
+    void onCardAction(b.dataset.act!, i);
+  });
+  list.addEventListener('input', (e) => {
+    const r = rowOf(e); if (!r) return;
+    const i = Number(r.dataset.i);
+    const el = e.target as HTMLInputElement;
+    const f = el.dataset.f; if (!f) return;
+    const card = work.cards[i];
+    if (f === 'outroKind') { void changeOutroKind(el.value as OutroKind); return; }
+    if (f === 'imgPos') { card.imgPos = el.value as Card['imgPos']; save(); scheduleRender(); return; }
+    pushUndoTyping();
+    if (f === 'showLabel' || f === 'accent') (card as unknown as Record<string, boolean>)[f] = el.checked;
+    else (card as unknown as Record<string, string>)[f] = el.value;
+    updateCount(r, card);
+    save(); scheduleRender();
+  });
+}
+
+async function onCardAction(act: string, i: number) {
+  const card = work.cards[i];
+  select(i);
+  if (act === 'up' || act === 'down') {
+    const j = act === 'up' ? i - 1 : i + 1;
+    if (j < 1 || j > BODY_COUNT) return;
+    pushUndo();
+    [work.cards[i], work.cards[j]] = [work.cards[j], work.cards[i]];
+    current = j;
+    save(); buildCardList(); scheduleRender();
+    $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${j}"] button[data-act="${act}"]`)?.focus();
+  } else if (act === 'clear') {
+    delete card.img; delete card.svg; delete card.imgSource;
+    save(); refreshRow(i); scheduleRender();
+  } else if (act === 'upload') {
+    uploadTarget = i;
+    const fi = $<HTMLInputElement>('fileInput');
+    fi.value = '';
+    fi.click();
+  } else if (act === 'ai') {
+    await drawOne(i);
+  } else if (act === 'rewrite') {
+    await rewrite(i);
+  }
+}
+
+async function changeOutroKind(k: OutroKind) {
+  pushUndo();
+  work.outroKind = k;
+  const outro = work.cards[TOTAL_CARDS - 1];
+  if (k === 'none') outro.text = '';
+  save(); refreshRow(TOTAL_CARDS - 1); renderStoryPanel(); scheduleRender();
+  const hasStory = work.cards.slice(1, -1).some((c) => c.text.trim());
+  const ai = textAI();
+  if (k !== 'none' && hasStory && ai && online()) {
+    setStatus($('composeStatus'), `${OUTRO_KINDS[k].name} 한 줄을 쓰는 중…`, 'busy');
+    try {
+      outro.text = await writeOutro(work, k, ai);
+      save(); refreshRow(TOTAL_CARDS - 1); scheduleRender();
+      setStatus($('composeStatus'), `마지막 장 덧붙임을 ${OUTRO_KINDS[k].name}(으)로 바꿨어요.`);
+    } catch (e) { setStatus($('composeStatus'), aiMessage(e), 'error'); }
+  }
+}
+
+async function rewrite(i: number) {
+  const ai = textAI();
+  if (!ai) { toast(`${PROVIDER_NAME[work.textAI.provider]} 키를 먼저 넣어 주세요.`); openSettings(); return; }
+  const card = work.cards[i];
+  if (card.kind === 'outro') {
+    pushUndo();
+    try { card.text = await writeOutro(work, work.outroKind, ai); } catch (e) { toast(aiMessage(e)); return; }
+    save(); refreshRow(i); scheduleRender();
+    return;
+  }
+  const ask = await promptBox(card.kind === 'cover' ? '표지 훅을 어떻게 고칠까요? (비워도 됩니다)' : `${i + 1}번 카드를 어떻게 고칠까요? (비워도 됩니다)`, { placeholder: '예: 더 짧게, 긴장감 있게, 대사로', ok: '다시 쓰기' });
+  if (ask === null) return;
+  const row = $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${i}"]`);
+  const btn = row?.querySelector<HTMLButtonElement>('button[data-act="rewrite"]');
+  if (btn) { btn.disabled = true; btn.textContent = '쓰는 중…'; }
+  try {
+    const text = await rewriteCard(work, i, ask, ai);
+    pushUndo();
+    card.text = text;
+    save(); scheduleRender();
+  } catch (e) {
+    toast(aiMessage(e));
+  } finally {
+    refreshRow(i);
+  }
+}
+
+/* ================= pictures ================= */
+function coverRef(i: number): { mime: string; b64: string } | null {
+  const p = work.imageAI.provider;
+  if (i === 0 || (p !== 'gemini' && p !== 'openai')) return null;
+  const cover = work.cards[0];
+  return cover.img ? dataUrlParts(cover.img) : null;
+}
+
+async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<boolean> {
+  const ai = imageAI();
+  const card = work.cards[i];
+  if (!ai) {
+    toast(`${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`);
+    openSettings();
+    return false;
+  }
+  if (artBusy.has(card.id)) return false;
+  artBusy.add(card.id);
+  refreshRow(i);
+  if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 그리는 중…`, 'busy');
+  try {
+    const out = await drawCard(work, i, ai, coverRef(i), signal);
+    delete card.img; delete card.svg;
+    if (out.img) card.img = out.img;
+    if (out.svg) card.svg = out.svg;
+    card.imgSource = ai.provider;
+    card.imgPos = 'center';
+    save();
+    if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.`);
+    return true;
+  } catch (e) {
+    if (!quiet) setStatus($('artStatus'), aiMessage(e), 'error');
+    if (quiet) throw e;
+    return false;
+  } finally {
+    artBusy.delete(card.id);
+    refreshRow(i);
+    scheduleRender();
+  }
+}
+
+async function drawAll() {
+  const ai = imageAI();
+  if (!ai) { toast(`${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`); openSettings(); return; }
+  let targets = work.cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro' && !srcOf(c)).map(({ i }) => i);
+  if (!targets.length) {
+    if (!(await confirmBox('모든 카드에 그림이 있어요. 표지와 본문 19장을 모두 다시 그릴까요?', { ok: '모두 다시 그리기' }))) return;
+    targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
+  }
+  const price = settings.prices[ai.provider] ?? 0;
+  const ok = await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${(price * targets.length).toFixed(2)}예요.`, {
+    ok: '그리기', detail: ['장당 단가는 설정에서 고칠 수 있어요.', ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.'],
+  });
+  if (!ok) return;
+  artCtl = new AbortController();
+  const signal = artCtl.signal;
+  $('btnArtStop').hidden = false;
+  $<HTMLButtonElement>('btnArtAll').disabled = true;
+  let done = 0, failed = 0, stop: string | null = null;
+  const status = () => setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${targets.length}`, 'busy');
+  status();
+  const one = async (i: number) => {
+    try { await drawOne(i, signal, true); done++; } catch (e) {
+      failed++;
+      if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = aiMessage(e);
+    }
+    status();
+  };
+  // the cover first, so the other cards can follow its look
+  if (targets[0] === 0) await one(targets.shift()!);
+  const queue = [...targets];
+  const worker = async () => { while (queue.length && !signal.aborted && !stop) await one(queue.shift()!); };
+  await Promise.all([worker(), worker()]);
+  artCtl = null;
+  $('btnArtStop').hidden = true;
+  $<HTMLButtonElement>('btnArtAll').disabled = false;
+  if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.`);
+  else if (stop) setStatus($('artStatus'), `${stop} ${done}장은 넣었습니다.`, 'error');
+  else setStatus($('artStatus'), failed ? `${done}장을 넣었고 ${failed}장은 실패했어요. 해당 카드의 「AI 그림」을 다시 눌러 보세요.` : `그림 ${done}장을 모두 넣었어요.`);
+}
+
+async function onUpload(file: File) {
+  const i = uploadTarget;
+  uploadTarget = null;
+  if (i === null || !file) return;
+  if (!file.type.startsWith('image/')) { toast('이미지 파일을 골라 주세요.'); return; }
+  const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
+  const card = work.cards[i];
+  delete card.svg;
+  card.img = await shrinkImage(url);
+  card.imgSource = work.imageAI.provider === 'canva' ? 'canva' : 'upload';
+  card.imgPos = 'center';
+  save(); refreshRow(i); scheduleRender();
+}
+
+/* ================= compose ================= */
+async function runCompose() {
+  const story = $<HTMLTextAreaElement>('story').value.trim();
+  const st = $('composeStatus');
+  if (!story) { setStatus(st, '이야기를 먼저 넣어 주세요.', 'error'); return; }
+  const mode = work.source.mode;
+  const eff = mode === 'auto' ? detectMode(story) : mode;
+  const ai = textAI();
+  if (!ai && eff !== 'split') { setStatus(st, `${PROVIDER_NAME[work.textAI.provider]} 키가 필요해요. 설정에서 넣어 주세요.`, 'error'); openSettings(); return; }
+  if (ai && !online()) { setStatus(st, '인터넷 연결이 필요해요.', 'error'); return; }
+
+  let split;
+  if (eff === 'split') {
+    split = splitManuscript(story);
+    if (split.changes.length) {
+      const ok = await confirmBox(`원고 ${split.originalCount}쪽을 본문 18장으로 맞춥니다.`, { ok: '이대로 맞추기', detail: split.changes });
+      if (!ok) return;
+    }
+  }
+  const hasWork = work.cards.some((c) => c.text.trim());
+  if (hasWork && !(await confirmBox('지금 카드를 새 이야기로 바꿀까요? 글이 그대로인 카드의 그림만 남겨요.', { ok: '바꾸기' }))) return;
+
+  pushUndo();
+  const before = work.cards.map((c) => c.text);
+  composeCtl = new AbortController();
+  $('btnComposeStop').hidden = false;
+  $<HTMLButtonElement>('btnCompose').disabled = true;
+  setStatus(st, ai ? `${PROVIDER_NAME[ai.provider]}가 20장을 구성하는 중… (보통 20초~1분)` : '원고를 카드에 앉히는 중…', 'busy');
+  try {
+    const draft: Work = JSON.parse(JSON.stringify(work));
+    const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split);
+    if (r.mode === 'split' || r.usedAI) {
+      draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; } });
+    }
+    if (ai && draft.outroKind !== 'none' && !draft.cards[TOTAL_CARDS - 1].text) {
+      try { draft.cards[TOTAL_CARDS - 1].text = await writeOutro(draft, draft.outroKind, ai, composeCtl.signal); } catch { /* the writer can fill it in */ }
+    }
+    work = draft;
+    current = 0;
+    save(); renderAllUI();
+    const styleNote = r.usedAI && work.style.preset === 'ai' ? ` 그림체 제안: ${work.style.name}.` : '';
+    setStatus(st, `20장 구성을 마쳤어요.${styleNote} 아래에서 다듬고 그림을 그려 보세요.${!ai && r.mode === 'split' ? ' (AI 키가 없어 장면 설명·그림체 제안은 비워 두었어요.)' : ''}`);
+    $('cardsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    undoStack.pop();
+    $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
+    setStatus(st, aiMessage(e), (e as AiError)?.code === 'cancelled' ? '' : 'error');
+  } finally {
+    composeCtl = null;
+    $('btnComposeStop').hidden = true;
+    $<HTMLButtonElement>('btnCompose').disabled = false;
+  }
+}
+
+/* ================= preview ================= */
+let renderTimer = 0, rendering = false, renderAgain = false;
+function scheduleRender() { clearTimeout(renderTimer); renderTimer = window.setTimeout(() => void renderPreview(), 60); }
+const stage = () => $<HTMLCanvasElement>('stage');
+
+async function renderPreview() {
+  if (rendering) { renderAgain = true; return; }
+  rendering = true;
+  try {
+    const H = cardHeight(work);
+    const sc = stage();
+    if (sc.height !== H) sc.height = H;
+    document.documentElement.style.setProperty('--card-ar', `1080 / ${H}`);
+    await ensureFonts(work);
+    await renderCard(sc.getContext('2d')!, work, current);
+    const off = document.createElement('canvas');
+    off.width = W; off.height = H;
+    const octx = off.getContext('2d')!;
+    for (let i = 0; i < work.cards.length; i++) {
+      const tc = thumbCanvases[i];
+      if (!tc) continue;
+      const th = Math.round((112 * H) / W);
+      if (tc.height !== th) tc.height = th;
+      await renderCard(octx, work, i);
+      const x = tc.getContext('2d')!;
+      x.clearRect(0, 0, tc.width, tc.height);
+      x.drawImage(off, 0, 0, W, H, 0, 0, tc.width, tc.height);
+    }
+    $('pagerText').textContent = `${current + 1} / ${TOTAL_CARDS}`;
+    document.querySelectorAll('#thumbs button').forEach((b, i) => b.classList.toggle('active', i === current));
+    document.querySelectorAll('.card-row').forEach((r, i) => r.classList.toggle('active', i === current));
+  } finally {
+    rendering = false;
+    if (renderAgain) { renderAgain = false; scheduleRender(); }
+  }
+}
+
+function renderLook() {
+  const r = ratioOf(work.ratio);
+  document.querySelectorAll<HTMLButtonElement>('#ratioSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === work.ratio));
+  $('ratioHint').textContent = r.hint + (r.instagramApi ? '' : ' · 인스타 API 직접 게시는 1:1·4:5만 돼요(공유는 가능).');
+  $('sizeTag').textContent = `카드 20장 · 1080×${r.h}`;
+  $('themes').innerHTML = (Object.keys(THEMES) as ThemeKey[]).map((k) => {
+    const t = THEMES[k];
+    return `<button type="button" class="theme ${k === work.theme ? 'active' : ''}" data-k="${k}" style="--sw-accent:${t.accent}"><span class="swatch" style="background:linear-gradient(135deg, ${t.bg[0]}, ${t.bg[1]})"></span>${t.name}</button>`;
+  }).join('');
+  $<HTMLSelectElement>('font').innerHTML = FONT_CHOICES.map((f) => `<option value="${esc(f.value)}" ${f.value === work.font ? 'selected' : ''}>${esc(f.label)}</option>`).join('');
+  $<HTMLInputElement>('series').value = work.series;
+  $<HTMLInputElement>('handle').value = work.handle;
+  $<HTMLInputElement>('follow').value = work.follow;
+}
+
+function renderAllUI() {
+  renderStoryPanel();
+  renderStyle();
+  renderLook();
+  buildCardList();
+  void renderTextAI();
+  void renderImageAI();
+  scheduleRender();
+}
+
+/* ================= settings ================= */
+function openSettings() {
+  const keyRow = (p: TextProvider, label: string, help: string) => `
+    <div class="key-row" data-p="${p}">
+      <div class="field">
+        <label for="key-${p}">${label}</label>
+        <input class="input" id="key-${p}" type="password" autocomplete="off" spellcheck="false" placeholder="${settings.keys[p] ? maskKey(settings.keys[p]) + ' 저장됨' : help}">
+      </div>
+      <button class="btn primary" type="button" data-a="save">확인·저장</button>
+      <button class="btn" type="button" data-a="del" ${settings.keys[p] ? '' : 'disabled'}>지우기</button>
+      <div class="state" data-state></div>
+    </div>`;
+  openModal(`
+    <div class="panel-head"><h2>설정</h2><button class="btn icon" type="button" data-a="close" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4l-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"/></svg></button></div>
+    <div class="scroll">
+      <div class="warn">API 키는 이 기기의 브라우저에만 저장되고, 해당 AI 회사로만 보내요. 공용 기기에서는 쓰지 말고, 각 회사 콘솔에서 월 사용 한도를 걸어 두세요.</div>
+      <div class="section-title">AI 키</div>
+      <div class="stack">
+        ${keyRow('anthropic', 'Anthropic (Claude 글 · Claude SVG 그림)', 'sk-ant-…')}
+        ${keyRow('google', 'Google AI Studio (Gemini 글 · Gemini 이미지)', 'AIza…')}
+        ${keyRow('openai', 'OpenAI (GPT 글 · GPT 이미지)', 'sk-…')}
+      </div>
+      <div class="section-title">새 작품 기본값</div>
+      <div class="row two">
+        <div class="field"><label for="setSeries">시리즈 이름</label><input class="input" id="setSeries" value="${esc(settings.series)}"></div>
+        <div class="field"><label for="setHandle">작가 핸들</label><input class="input" id="setHandle" value="${esc(settings.handle)}"></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label for="setFollow">팔로우 문구 (마지막 장)</label><input class="input" id="setFollow" value="${esc(settings.follow)}"></div>
+      <div class="section-title">그림</div>
+      <div class="row three">
+        <div class="field"><label for="priceGemini">Gemini 장당 $</label><input class="input" id="priceGemini" type="number" step="0.01" min="0" value="${settings.prices.gemini}"></div>
+        <div class="field"><label for="priceOpenai">GPT 장당 $</label><input class="input" id="priceOpenai" type="number" step="0.01" min="0" value="${settings.prices.openai}"></div>
+        <div class="field"><label for="priceClaude">Claude SVG 장당 $</label><input class="input" id="priceClaude" type="number" step="0.01" min="0" value="${settings.prices.claude}"></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label for="claudeTier">Claude SVG 품질</label>
+        <select class="input" id="claudeTier"><option value="quick" ${settings.claudeArtTier === 'quick' ? 'selected' : ''}>빠름 (장당 몇 초)</option><option value="detailed" ${settings.claudeArtTier === 'detailed' ? 'selected' : ''}>정밀 (장당 30초 안팎)</option></select>
+      </div>
+      <p class="hint" style="margin-top:16px">가격은 자주 바뀌어요. 각 회사 가격표를 보고 맞춰 두면 그림 그리기 전에 예상 비용을 보여 줘요.</p>
+    </div>
+    <div class="toolbar" style="margin-top:16px"><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
+  {
+    size: 'mid',
+    wire: (box, close) => {
+      box.querySelector('[data-a="close"]')!.addEventListener('click', close);
+      box.querySelectorAll<HTMLElement>('.key-row').forEach((row) => {
+        const p = row.dataset.p as TextProvider;
+        const input = row.querySelector<HTMLInputElement>('input')!;
+        const state = row.querySelector<HTMLElement>('[data-state]')!;
+        const setState = (msg: string, cls = '') => { state.textContent = msg; state.className = 'state ' + cls; };
+        row.querySelector('[data-a="save"]')!.addEventListener('click', async () => {
+          const key = input.value.trim();
+          if (!key) { setState('키를 붙여 넣어 주세요.', 'bad'); return; }
+          setState('확인하는 중…');
+          try {
+            const lists = await listModels(p, key);
+            settings.keys[p] = key;
+            modelLists[p] = lists;
+            await kv.set('models.' + p, lists);
+            await saveSettings(settings);
+            input.value = '';
+            input.placeholder = maskKey(key) + ' 저장됨';
+            row.querySelector<HTMLButtonElement>('[data-a="del"]')!.disabled = false;
+            setState(`확인했어요. 글 모델 ${lists.text.length}개${lists.image.length ? ` · 그림 모델 ${lists.image.length}개` : ''}`, 'ok');
+            void renderTextAI(); void renderImageAI(); buildCardList();
+          } catch (e) {
+            setState(e instanceof AiError && e.code === 'invalid_key' ? '잘못된 키예요.' : e instanceof AiError && e.code === 'network' ? '네트워크 오류예요. 연결을 확인해 주세요.' : aiMessage(e), 'bad');
+          }
+        });
+        row.querySelector('[data-a="del"]')!.addEventListener('click', async () => {
+          settings.keys[p] = '';
+          delete modelLists[p];
+          await kv.set('models.' + p, null);
+          await saveSettings(settings);
+          input.placeholder = '';
+          row.querySelector<HTMLButtonElement>('[data-a="del"]')!.disabled = true;
+          setState('지웠어요.');
+          void renderTextAI(); void renderImageAI();
+        });
+      });
+      box.querySelector('[data-a="done"]')!.addEventListener('click', async () => {
+        const v = (id: string) => (box.querySelector<HTMLInputElement>('#' + id)!.value);
+        settings.series = v('setSeries').trim();
+        settings.handle = v('setHandle').trim();
+        settings.follow = v('setFollow').trim();
+        settings.prices = { gemini: Number(v('priceGemini')) || 0, openai: Number(v('priceOpenai')) || 0, claude: Number(v('priceClaude')) || 0 };
+        settings.claudeArtTier = v('claudeTier') === 'detailed' ? 'detailed' : 'quick';
+        await saveSettings(settings);
+        close();
+        void renderImageAI();
+        toast('설정을 저장했어요. 시리즈·핸들·팔로우 문구는 새 작품부터 들어가요.');
+      });
+    },
+  });
+}
+
+/* ================= library ================= */
+async function openLibrary() {
+  const all = (await works.all()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const item = (w: Work) => `
+    <div class="work ${w.id === work.id ? 'current' : ''}" data-id="${esc(w.id)}">
+      ${w.thumb ? `<img alt="" src="${w.thumb}">` : '<div class="noimg">그림 없음</div>'}
+      <div><b>${esc(w.name || workTitle(w))}</b><span>${fmtDate(w.updatedAt)} · ${w.cards.filter((c) => c.text.trim()).length}/20장 글 · ${w.cards.filter((c) => c.img || c.svg).length}장 그림</span></div>
+      <div class="acts">
+        ${w.id === work.id ? '<span class="hint">지금 작업</span>' : '<button class="btn small" type="button" data-a="open">열기</button>'}
+        <button class="btn small" type="button" data-a="copy">사본</button>
+        <button class="btn small" type="button" data-a="export">내보내기</button>
+        <button class="btn small" type="button" data-a="del" ${w.id === work.id ? 'disabled' : ''}>삭제</button>
+      </div>
+    </div>`;
+  openModal(`
+    <div class="panel-head"><h2>작품 보관함</h2>
+      <div class="toolbar">
+        <button class="btn small primary" type="button" data-a="new">새 작품</button>
+        <button class="btn small" type="button" data-a="import">가져오기</button>
+        <button class="btn icon" type="button" data-a="close" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4l-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"/></svg></button>
+      </div>
+    </div>
+    <p class="hint" style="margin-bottom:12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 다른 기기로 옮기려면 「내보내기」 파일을 그 기기에서 「가져오기」 하세요. 구글 드라이브 백업은 다음 단계에서 들어가요.</p>
+    <div class="lib">${all.length ? all.map(item).join('') : '<div class="empty-note">아직 저장된 작품이 없어요.</div>'}</div>`,
+  {
+    size: 'wide',
+    wire: (box, close) => {
+      box.querySelector('[data-a="close"]')!.addEventListener('click', close);
+      box.querySelector('[data-a="new"]')!.addEventListener('click', async () => {
+        await persist(true);
+        work = newWork(defaults());
+        current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+        save(); renderAllUI(); close();
+        toast('새 작품을 시작했어요.');
+      });
+      box.querySelector('[data-a="import"]')!.addEventListener('click', () => { const f = $<HTMLInputElement>('libFile'); f.value = ''; f.click(); close(); });
+      box.querySelectorAll<HTMLElement>('.work').forEach((el) => {
+        const id = el.dataset.id!;
+        el.querySelector('[data-a="open"]')?.addEventListener('click', async () => {
+          await persist(true);
+          const w = await works.get(id);
+          if (!w) return;
+          work = normalizeWork(w, defaults());
+          current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+          await kv.set('currentId', work.id);
+          renderAllUI(); close();
+        });
+        el.querySelector('[data-a="copy"]')!.addEventListener('click', async () => {
+          const w = id === work.id ? work : await works.get(id);
+          if (!w) return;
+          const copy: Work = { ...JSON.parse(JSON.stringify(w)), id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: `${w.name || workTitle(w)} · 사본 ${fmtDate(Date.now())}`, createdAt: Date.now(), updatedAt: Date.now() };
+          await works.put(copy);
+          close(); void openLibrary();
+        });
+        el.querySelector('[data-a="export"]')!.addEventListener('click', async () => {
+          const w = id === work.id ? work : await works.get(id);
+          if (!w) return;
+          download(new Blob([JSON.stringify({ app: 'cardnovel', version: 1, work: w })], { type: 'application/json' }), `${fileBase(w)}.cardnovel.json`);
+        });
+        el.querySelector('[data-a="del"]')!.addEventListener('click', async () => {
+          close();
+          if (!(await confirmBox('이 작품을 지울까요? 되돌릴 수 없어요.', { ok: '지우기' }))) { void openLibrary(); return; }
+          await works.del(id);
+          void openLibrary();
+        });
+      });
+    },
+  });
+}
+
+async function importFile(file: File) {
+  try {
+    const data = JSON.parse(await file.text());
+    const w = data?.work ?? data;
+    if (!w || !Array.isArray(w.cards)) throw new Error('not a work');
+    await persist(true);
+    work = normalizeWork({ ...w, id: w.id || undefined }, defaults());
+    if (!w.id) work.id = Date.now().toString(36);
+    current = 0;
+    save(); renderAllUI();
+    toast('작품을 가져왔어요.');
+  } catch {
+    toast('카드소설 제작소에서 내보낸 파일이 아니에요.');
+  }
+}
+
+/* ================= export ================= */
+const exportFmt = (): ImgFormat => ($<HTMLSelectElement>('exportFmt').value === 'jpg' ? 'jpg' : 'png');
+
+async function copyCaption(silent = false) {
+  try {
+    await navigator.clipboard.writeText(captionText(work));
+    if (!silent) toast('캡션을 복사했어요. 게시글에 붙여 넣으세요.');
+    return true;
+  } catch {
+    if (!silent) toast('복사가 막혔어요. 표지 제목과 훅을 직접 옮겨 적어 주세요.');
+    return false;
+  }
+}
+
+async function saveAll() {
+  const btn = $<HTMLButtonElement>('btnSaveAll');
+  btn.disabled = true;
+  try {
+    const blob = await zipAll(work, exportFmt(), (n) => { btn.textContent = `만드는 중 ${n}/20`; });
+    download(blob, `${fileBase(work)}_20장.zip`);
+    toast('20장을 ZIP으로 저장했어요.');
+  } catch { toast('저장하지 못했어요. 다시 시도해 주세요.'); } finally { btn.disabled = false; btn.textContent = '전체 ZIP 저장'; }
+}
+
+async function saveOne() {
+  try { download(await renderToBlob(work, current, exportFmt()), cardFileName(work, current, exportFmt())); toast(`${current + 1}번 카드를 저장했어요.`); } catch { toast('저장하지 못했어요.'); }
+}
+
+async function share() {
+  const btn = $<HTMLButtonElement>('btnShare');
+  btn.disabled = true;
+  try {
+    const files = await renderAllFiles(work, 'jpg', (n) => { btn.textContent = `준비 중 ${n}/20`; });
+    const copied = await copyCaption(true);
+    const r = await shareCards(files, captionText(work));
+    if (r === 'shared') toast(copied ? '공유했어요. 캡션은 복사돼 있으니 게시글에 붙여 넣으세요.' : '공유했어요.');
+    else if (r === 'unsupported') toast('이 브라우저는 파일 공유를 지원하지 않아요. 「전체 ZIP 저장」 후 인스타 앱에서 올려 주세요.', 5000);
+  } catch { toast('공유하지 못했어요.'); } finally { btn.disabled = false; btn.textContent = '인스타로 공유 (20장)'; }
+}
+
+/* ================= wiring ================= */
+function wire() {
+  $('btnLibrary').addEventListener('click', () => void openLibrary());
+  $('btnSettings').addEventListener('click', openSettings);
+  $('btnCaption').addEventListener('click', () => void copyCaption());
+  $('btnSaveAll').addEventListener('click', () => void saveAll());
+  $('btnSaveOne').addEventListener('click', () => void saveOne());
+  $('btnShare').addEventListener('click', () => void share());
+  $('btnUndo').addEventListener('click', undo);
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target as HTMLElement)?.tagName;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); undo(); }
+  });
+
+  // story
+  $('story').addEventListener('input', () => { work.source.text = $<HTMLTextAreaElement>('story').value; updateModeHint(); save(); });
+  document.querySelectorAll<HTMLButtonElement>('#modeSeg button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.v as InputMode)));
+  $('outroKind').addEventListener('change', () => void changeOutroKind($<HTMLSelectElement>('outroKind').value as OutroKind));
+  $('btnCompose').addEventListener('click', () => void runCompose());
+  $('btnComposeStop').addEventListener('click', () => composeCtl?.abort());
+  $('btnExample').addEventListener('click', () => {
+    openModal(`<h2>나눈 원고 형식</h2><p class="hint" style="margin:8px 0 12px">머리글 한 줄로 카드를 나눕니다. 표지의 첫 줄은 제목, 둘째 줄은 훅이 돼요. 본문이 18장이 아니면 합치거나 나눌 곳을 먼저 보여 줘요.</p><pre class="format-note" style="white-space:pre-wrap;margin:0 0 16px">${esc(SAMPLE_SPLIT)}</pre><div class="toolbar"><button class="btn" type="button" data-a="close">닫기</button><button class="btn primary" type="button" data-a="use">이 형식으로 시작</button></div>`, {
+      size: 'mid',
+      wire: (box, close) => {
+        box.querySelector('[data-a="close"]')!.addEventListener('click', close);
+        box.querySelector('[data-a="use"]')!.addEventListener('click', () => {
+          const ta = $<HTMLTextAreaElement>('story');
+          if (!ta.value.trim()) { ta.value = SAMPLE_SPLIT; work.source.text = SAMPLE_SPLIT; setMode('split'); }
+          close(); ta.focus();
+        });
+      },
+    });
+  });
+  $('textProvider').addEventListener('change', () => {
+    const p = $<HTMLSelectElement>('textProvider').value as TextProvider;
+    work.textAI = { provider: p, model: settings.models[p] || '' };
+    settings.textAI = { ...work.textAI };
+    void saveSettings(settings); save(); void renderTextAI();
+  });
+  $('textModel').addEventListener('change', () => {
+    const m = $<HTMLSelectElement>('textModel').value;
+    work.textAI.model = m;
+    settings.models[work.textAI.provider] = m;
+    settings.textAI = { ...work.textAI };
+    void saveSettings(settings); save();
+  });
+
+  // style
+  $('stylePreset').addEventListener('change', () => {
+    const v = $<HTMLSelectElement>('stylePreset').value;
+    if (!v) return;
+    const keepChars = work.style.characters;
+    work.style = presetStyle(v);
+    if (keepChars && !work.style.characters) work.style.characters = keepChars;
+    save(); renderStyle();
+    toast(`그림체를 ‘${work.style.name}’(으)로 바꿨어요. 새로 그리는 그림부터 적용돼요.`);
+  });
+  $('stylePrompt').addEventListener('input', () => { work.style.prompt = $<HTMLTextAreaElement>('stylePrompt').value; if (work.style.preset !== 'ai') work.style.preset = 'custom'; save(); });
+  $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; save(); });
+
+  // pictures
+  $('imageProvider').addEventListener('change', () => {
+    const p = $<HTMLSelectElement>('imageProvider').value as ImageProvider;
+    const remembered = p === 'gemini' ? settings.models.geminiImage : p === 'openai' ? settings.models.openaiImage : p === 'claude' ? settings.models.anthropic : '';
+    work.imageAI = { provider: p, model: remembered };
+    settings.imageAI = { ...work.imageAI };
+    void saveSettings(settings); save(); void renderImageAI(); buildCardList(); scheduleRender();
+  });
+  $('imageModel').addEventListener('change', () => {
+    const m = $<HTMLSelectElement>('imageModel').value;
+    work.imageAI.model = m;
+    const p = work.imageAI.provider;
+    if (p === 'gemini') settings.models.geminiImage = m; else if (p === 'openai') settings.models.openaiImage = m;
+    settings.imageAI = { ...work.imageAI };
+    void saveSettings(settings); save();
+  });
+  $('btnArtAll').addEventListener('click', () => void drawAll());
+  $('btnArtStop').addEventListener('click', () => artCtl?.abort());
+  $('fileInput').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void onUpload(f); });
+  $('libFile').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void importFile(f); });
+  wireCardList();
+
+  // look
+  $('ratioSeg').addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-v]');
+    if (!b) return;
+    work.ratio = b.dataset.v as RatioKey;
+    save(); renderLook(); buildCardList(); scheduleRender();
+  });
+  $('themes').addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-k]');
+    if (!b) return;
+    work.theme = b.dataset.k as ThemeKey;
+    save(); renderLook(); scheduleRender();
+  });
+  $('font').addEventListener('change', () => { work.font = $<HTMLSelectElement>('font').value; save(); scheduleRender(); });
+  for (const f of ['series', 'handle', 'follow'] as const) {
+    $(f).addEventListener('input', () => { work[f] = $<HTMLInputElement>(f).value; save(); renderStoryPanel(); refreshRow(TOTAL_CARDS - 1); scheduleRender(); });
+  }
+
+  // preview
+  $('btnPrev').addEventListener('click', () => select((current + TOTAL_CARDS - 1) % TOTAL_CARDS));
+  $('btnNext').addEventListener('click', () => select((current + 1) % TOTAL_CARDS));
+
+  // online state
+  const net = () => { $('offlinePill').hidden = online(); buildCardList(); void renderImageAI(); scheduleRender(); };
+  window.addEventListener('online', net);
+  window.addEventListener('offline', net);
+
+  wireSplitter();
+}
+
+function wireSplitter() {
+  const sp = $('splitter');
+  let dragging = false;
+  void kv.get<number>('rightw', 0).then((w) => { if (w >= 320 && w <= 760) document.documentElement.style.setProperty('--right-w', w + 'px'); });
+  sp.addEventListener('pointerdown', (e) => { dragging = true; sp.classList.add('drag'); sp.setPointerCapture(e.pointerId); });
+  sp.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const w = Math.max(320, Math.min(760, window.innerWidth - e.clientX - 16));
+    document.documentElement.style.setProperty('--right-w', w + 'px');
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    sp.classList.remove('drag');
+    void kv.set('rightw', parseInt(getComputedStyle(document.documentElement).getPropertyValue('--right-w'), 10) || 440);
+  };
+  sp.addEventListener('pointerup', end);
+  sp.addEventListener('pointercancel', end);
+  sp.addEventListener('dblclick', () => { document.documentElement.style.setProperty('--right-w', '440px'); void kv.set('rightw', 0); });
+}
+
+/* ================= start ================= */
+async function start() {
+  settings = await loadSettings();
+  const id = await kv.get<string | null>('currentId', null);
+  const saved = id ? await works.get(id) : null;
+  work = saved ? normalizeWork(saved, defaults()) : newWork(defaults());
+  if (!saved) await works.put(work);
+  wire();
+  $('offlinePill').hidden = online();
+  renderAllUI();
+  $('savedAt').textContent = saved ? `불러옴 · ${fmtDate(saved.updatedAt)}` : '';
+  if (!settings.keys.anthropic && !settings.keys.google && !settings.keys.openai) {
+    setStatus($('composeStatus'), '처음이라면 「설정」에서 AI 키를 하나 넣어 주세요. 나눈 원고는 키 없이도 카드로 만들 수 있어요.');
+  }
+  if ('serviceWorker' in navigator && import.meta.env.PROD) {
+    navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
+  }
+}
+
+void start();
+
+// exposed for automated browser checks
+declare global { interface Window { __cardnovel?: { work: () => Work } } }
+window.__cardnovel = { work: () => work };
