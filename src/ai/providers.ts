@@ -243,27 +243,52 @@ function geminiText(r: GeminiResponse): string {
   return text;
 }
 
+/** How each Claude model gives JSON back, once known: structured outputs (`output_config.format`, the current way; the
+ *  newest models also refuse forced tool calls) or a forced tool call (models from before structured outputs). */
+const claudeJsonRoute = new Map<string, 'format' | 'tool'>();
+/** for tests */
+export const resetClaudeJsonRoutes = (): void => claudeJsonRoute.clear();
+
+async function claudeJSON<T>(route: 'format' | 'tool', req: TextRequest & { schema: Record<string, unknown> }): Promise<T> {
+  const { key, model, system, prompt, schema, maxTokens = 16000, signal, tag = 'other' } = req;
+  const base = { model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: prompt }] };
+  const body = route === 'format'
+    ? { ...base, output_config: { format: { type: 'json_schema', schema } } }
+    // a forced tool call returns the object already parsed
+    : { ...base, tools: [{ name: 'submit', description: '결과를 제출합니다.', input_schema: schema }], tool_choice: { type: 'tool', name: 'submit' } };
+  const r = (await call(`${ANTHROPIC}/messages`, { method: 'POST', headers: anthropicHeaders(key), body: JSON.stringify(body) }, signal)) as
+    { content?: { type: string; input?: unknown; text?: string }[]; stop_reason?: string } & AnthropicUsage;
+  report({ provider: 'anthropic', model, tag, images: 0, ...anthropicUse(r) });
+  if (r.stop_reason === 'refusal') throw new AiError('refused');
+  if (route === 'tool') {
+    const tool = (r.content ?? []).find((c) => c.type === 'tool_use');
+    if (tool?.input && typeof tool.input === 'object') return tool.input as T;
+  }
+  const text = (r.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+  if (!text.trim()) throw new AiError(r.stop_reason === 'max_tokens' ? 'invalid_json' : 'empty');
+  return extractJSON(text) as T;
+}
+
 export async function generateJSON<T = unknown>(req: TextRequest & { schema: Record<string, unknown> }): Promise<T> {
   const { provider, key, model, system, prompt, schema, maxTokens = 16000, signal, tag = 'other' } = req;
   if (!key) throw new AiError('no_key');
   if (!model) throw new AiError('bad_request', '모델을 골라 주세요');
   if (provider === 'anthropic') {
-    // a forced tool call returns the object already parsed
-    const r = (await call(`${ANTHROPIC}/messages`, {
-      method: 'POST', headers: anthropicHeaders(key),
-      body: JSON.stringify({
-        model, max_tokens: maxTokens, system,
-        messages: [{ role: 'user', content: prompt }],
-        tools: [{ name: 'submit', description: '결과를 제출합니다.', input_schema: schema }],
-        tool_choice: { type: 'tool', name: 'submit' },
-      }),
-    }, signal)) as { content?: { type: string; input?: unknown; text?: string }[]; stop_reason?: string } & AnthropicUsage;
-    report({ provider, model, tag, images: 0, ...anthropicUse(r) });
-    if (r.stop_reason === 'refusal') throw new AiError('refused');
-    const tool = (r.content ?? []).find((c) => c.type === 'tool_use');
-    if (tool?.input && typeof tool.input === 'object') return tool.input as T;
-    const text = (r.content ?? []).map((c) => c.text ?? '').join('');
-    return extractJSON(text) as T;
+    const route = claudeJsonRoute.get(model) ?? 'format';
+    try {
+      const out = await claudeJSON<T>(route, req);
+      claudeJsonRoute.set(model, route);
+      return out;
+    } catch (e) {
+      // the newest models refuse forced tool calls; some older ones do not know structured outputs: try the other way once
+      const other = route === 'format' ? 'tool' : 'format';
+      if (e instanceof AiError && e.code === 'bad_request' && (route === 'format' ? /output_config|output_format|json_schema|format|schema/i : /tool_choice|tool/i).test(e.message)) {
+        const out = await claudeJSON<T>(other, req);
+        claudeJsonRoute.set(model, other);
+        return out;
+      }
+      throw e;
+    }
   }
   if (provider === 'openai') {
     const r = (await call(`${OPENAI}/chat/completions`, {

@@ -92,7 +92,7 @@ describe('usage', () => {
     onUsage((u) => seen.push(u));
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const body = url.includes('anthropic')
-        ? { content: [{ type: 'tool_use', input: { ok: 1 } }], usage: { input_tokens: 120, output_tokens: 30 } }
+        ? { content: [{ type: 'text', text: '{"ok":1}' }], usage: { input_tokens: 120, output_tokens: 30 } }
         : url.includes('openai')
           ? { choices: [{ message: { content: '안녕' } }], usage: { prompt_tokens: 50, completion_tokens: 7 } }
           : { candidates: [{ content: { parts: [{ text: '안녕' }] } }], usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 5, thoughtsTokenCount: 10 } };

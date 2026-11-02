@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AiError, extractJSON, generateImage, generateJSON, listModels, nearest, pickDefault } from '../src/ai/providers';
+import { AiError, extractJSON, generateImage, generateJSON, listModels, nearest, pickDefault, resetClaudeJsonRoutes } from '../src/ai/providers';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); resetClaudeJsonRoutes(); });
 
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -20,16 +20,53 @@ describe('nearest', () => {
 });
 
 describe('requests', () => {
-  it('Claude: forced tool call with browser header, answer read from the tool input', async () => {
-    const fetchMock = vi.fn(async () => reply({ content: [{ type: 'tool_use', name: 'submit', input: { text: '안녕' } }], stop_reason: 'tool_use' }));
+  it('Claude: structured outputs (output_config.format) with the browser header, answer read from the text', async () => {
+    const fetchMock = vi.fn(async () => reply({ content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '{"text":"안녕"}' }], stop_reason: 'end_turn' }));
     vi.stubGlobal('fetch', fetchMock);
-    const out = await generateJSON({ provider: 'anthropic', key: 'k', model: 'm', system: 's', prompt: 'p', schema: { type: 'object' } });
+    const schema = { type: 'object', additionalProperties: false, required: ['text'], properties: { text: { type: 'string' } } };
+    const out = await generateJSON({ provider: 'anthropic', key: 'k', model: 'claude-sonnet-5-5', system: 's', prompt: 'p', schema });
     expect(out).toEqual({ text: '안녕' });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect((init.headers as Record<string, string>)['anthropic-dangerous-direct-browser-access']).toBe('true');
     const body = JSON.parse(String(init.body));
-    expect(body.tool_choice).toEqual({ type: 'tool', name: 'submit' });
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema } });
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+  it('Claude: a model without structured outputs falls back to a forced tool call, and is remembered', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      if (body.output_config) return reply({ type: 'error', error: { type: 'invalid_request_error', message: 'output_config.format: structured outputs are not supported for this model' } }, 400);
+      return reply({ content: [{ type: 'tool_use', name: 'submit', input: { text: '옛 모델' } }], stop_reason: 'tool_use' });
+    }));
+    const req = { provider: 'anthropic' as const, key: 'k', model: 'claude-old', system: 's', prompt: 'p', schema: { type: 'object' } };
+    expect(await generateJSON(req)).toEqual({ text: '옛 모델' });
+    expect(bodies.map((b) => (b.output_config ? 'format' : 'tool'))).toEqual(['format', 'tool']);
+    expect(bodies[1].tool_choice).toEqual({ type: 'tool', name: 'submit' });
+    await generateJSON(req);
+    expect(bodies.map((b) => (b.output_config ? 'format' : 'tool'))).toEqual(['format', 'tool', 'tool']); // no second failed try
+  });
+  it('Claude: a model that refuses forced tool calls is answered through structured outputs', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      n++;
+      if (n === 1) return reply({ type: 'error', error: { type: 'invalid_request_error', message: 'output_config.format: not supported' } }, 400);
+      if (body.tool_choice) return reply({ type: 'error', error: { type: 'invalid_request_error', message: 'tool_choice: type "tool" and "any" are not supported for this model.' } }, 400);
+      return reply({ content: [{ type: 'text', text: '{"ok":true}' }], stop_reason: 'end_turn' });
+    }));
+    const req = { provider: 'anthropic' as const, key: 'k', model: 'claude-x', system: 's', prompt: 'p', schema: { type: 'object' } };
+    await expect(generateJSON(req)).rejects.toMatchObject({ code: 'bad_request' }); // format refused, then tool refused: a real error
+    expect(await generateJSON(req)).toEqual({ ok: true }); // nothing was remembered from the failed call, so the next one starts with structured outputs again
+  });
+  it('Claude: a refusal or an empty answer is reported, not parsed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ content: [], stop_reason: 'refusal' })));
+    await expect(generateJSON({ provider: 'anthropic', key: 'k', model: 'm', system: 's', prompt: 'p', schema: {} })).rejects.toMatchObject({ code: 'refused' });
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ content: [{ type: 'thinking', thinking: '' }], stop_reason: 'max_tokens' })));
+    await expect(generateJSON({ provider: 'anthropic', key: 'k', model: 'm', system: 's', prompt: 'p', schema: {} })).rejects.toMatchObject({ code: 'invalid_json' });
   });
   it('OpenAI: strict json_schema response format', async () => {
     const fetchMock = vi.fn(async () => reply({ choices: [{ message: { content: '{"text":"hi"}' } }] }));
