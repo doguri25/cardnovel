@@ -6,9 +6,9 @@ vi.mock('@vercel/blob', () => blob);
 
 import { seal } from '../api/_lib/canva';
 import { checkDeckUrl, checkExportUrl } from '../api/_lib/finish';
-import { POST as finishImport } from '../api/canva/finish-import';
-import { POST as finishExport } from '../api/canva/finish-export';
-import { GET as page } from '../api/canva/page';
+import { POST as finishImport } from '../api/_canva/finish-import';
+import { POST as finishExport } from '../api/_canva/finish-export';
+import { GET as page } from '../api/_canva/page';
 
 const SECRET = 'test-session-secret-0123456789abcdef';
 beforeAll(() => {

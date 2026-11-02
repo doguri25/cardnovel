@@ -16,7 +16,7 @@ const html = (body: string, status: number, nonce = '', cache = 'no-store'): Res
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const origin = url.origin;
-  const id = url.searchParams.get('id') || '';
+  const id = url.searchParams.get('id') || /^\/s\/([^/]+)/.exec(url.pathname)?.[1] || '';
   if (!ID_RE.test(id) || !process.env.BLOB_READ_WRITE_TOKEN) return html(notFoundPage(origin), 404);
   try {
     const meta = await head(manifestPath(id));

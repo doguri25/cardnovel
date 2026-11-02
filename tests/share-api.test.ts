@@ -10,11 +10,11 @@ const blob = vi.hoisted(() => ({
 vi.mock('@vercel/blob', () => blob);
 
 import { sharePage, validateManifest } from '../api/_lib/share';
-import { POST as upload } from '../api/share/upload';
-import { POST as create } from '../api/share/create';
-import { POST as remove } from '../api/share/delete';
-import { GET as page } from '../api/share/page';
-import { GET as status } from '../api/share/status';
+import { POST as upload } from '../api/_share/upload';
+import { POST as create } from '../api/_share/create';
+import { POST as remove } from '../api/_share/delete';
+import { GET as page } from '../api/_share/page';
+import { GET as status } from '../api/_share/status';
 
 const KEY = 'cn-test-key';
 const ID = 'abcdefghij0123';
@@ -88,5 +88,21 @@ describe('share link API', () => {
     expect(html).not.toContain('<script>alert(1)');
     expect(html).not.toContain('<img src=x');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('one function per endpoint group', () => {
+  it('routes /api/share/<action> and /s/<id> to the right handler', async () => {
+    const { GET, POST } = await import('../api/share');
+    expect(await (await GET(req('/api/share?action=status', { key: KEY }))).json()).toEqual({ enabled: true, keyOk: true });
+    expect(await (await GET(req('/api/share/status', { key: KEY }))).json()).toEqual({ enabled: true, keyOk: true });
+    expect((await GET(req('/api/share?action=nope'))).status).toBe(404);
+    expect((await GET(req('/api/share?action=upload'))).status).toBe(405);
+    blob.head.mockRejectedValueOnce(new Error('missing'));
+    const page = await GET(req(`/s/${ID}`));
+    expect(page.status).toBe(404);
+    expect(blob.head).toHaveBeenCalledWith(`shares/${ID}/manifest.json`);
+    const r = await POST(req('/api/share?action=delete', { method: 'POST', key: KEY, body: JSON.stringify({ id: ID }) }));
+    expect(await r.json()).toEqual({ deleted: 1 });
   });
 });

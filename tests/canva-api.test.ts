@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { b64url, pkceChallenge, seal, unseal, verifyCorrelationJwt } from '../api/_lib/canva';
-import { GET as login } from '../api/canva/login';
-import { GET as callback } from '../api/canva/callback';
-import { POST as design } from '../api/canva/design';
-import { POST as exportDesign } from '../api/canva/export';
-import { GET as status } from '../api/canva/status';
+import { GET as login } from '../api/_canva/login';
+import { GET as callback } from '../api/_canva/callback';
+import { POST as design } from '../api/_canva/design';
+import { POST as exportDesign } from '../api/_canva/export';
+import { GET as status } from '../api/_canva/status';
 
 const SECRET = 'test-session-secret-0123456789abcdef';
 beforeAll(() => {
@@ -144,5 +144,18 @@ describe('routes', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
+  });
+});
+
+describe('one function for all Canva endpoints', () => {
+  it('dispatches by ?action= or by path', async () => {
+    const { GET, POST } = await import('../api/canva');
+    expect(await (await GET(new Request('https://cardnovel.vercel.app/api/canva?action=status'))).json()).toEqual({ connected: false });
+    expect(await (await GET(new Request('https://cardnovel.vercel.app/api/canva/status'))).json()).toEqual({ connected: false });
+    const login = await GET(new Request('https://cardnovel.vercel.app/api/canva?action=login'));
+    expect(login.status).toBe(302);
+    expect(login.headers.get('location')).toContain('canva.com/api/oauth/authorize');
+    expect((await POST(new Request('https://cardnovel.vercel.app/api/canva?action=status', { method: 'POST' }))).status).toBe(405);
+    expect((await GET(new Request('https://cardnovel.vercel.app/api/canva?action=../../etc'))).status).toBe(404);
   });
 });
