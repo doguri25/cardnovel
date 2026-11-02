@@ -30,6 +30,8 @@ self.addEventListener('fetch', (e) => {
   if (sameOrigin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/s/'))) return;
 
   if (req.mode === 'navigate') {
+    // only the app itself is the shell; other pages (about, privacy, terms) load normally and must never replace it
+    if (sameOrigin && url.pathname !== '/' && url.pathname !== '/index.html') return;
     // pages that carry a Canva landing (?canva=…) must reach the network too; the shell is the same file
     // network first, so a new deploy shows up; the cached shell when offline
     e.respondWith(

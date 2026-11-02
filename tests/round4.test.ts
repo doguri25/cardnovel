@@ -122,5 +122,7 @@ describe('service worker template', () => {
     expect(t.match(/__VERSION__/g)).toHaveLength(1);
     expect(t.match(/__ASSETS__/g)).toHaveLength(1);
     expect(t).toContain("url.pathname.startsWith('/s/')");
+    // other pages (privacy policy, terms) never become the cached app shell
+    expect(t).toContain("url.pathname !== '/' && url.pathname !== '/index.html') return;");
   });
 });

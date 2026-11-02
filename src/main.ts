@@ -1068,7 +1068,7 @@ function openSettings(pane: SettingsPane = 'keys') {
       </details>
       </div>
     </div>
-    <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)}</span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
+    <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)} · <a href="./about.html" target="_blank" rel="noopener">앱 소개</a> · <a href="./privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="./terms.html" target="_blank" rel="noopener">이용약관</a></span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
   {
     size: 'mid',
     wire: (box, close) => {
