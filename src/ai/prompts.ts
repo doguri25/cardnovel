@@ -92,12 +92,12 @@ ${MODE_RULES[mode]}
 - label: 그 카드의 흐름을 2~6자로(예: 시작, 첫 만남, 어긋남, 전환, 절정, 그 후).
 - title: 대부분 빈 문자열. 꼭 필요한 카드에만 짧은 소제목.
 - accent: 이야기가 뒤집히거나 감정이 가장 높은 카드 1~2장만 true.
-- scene: 그 카드에 그릴 장면을 영어로 한두 문장(장소, 시간, 인물의 행동, 핵심 사물, 구도). 글자·말풍선은 넣지 않습니다.
+- scene: 그 카드 글의 순간을 그림 한 장으로 옮긴 영어 한두 문장. 인물은 characters의 이름으로 부르고, 누가·어디서·언제·무엇을 하는지·핵심 사물·거리(close-up, medium shot, wide shot)를 눈에 보이는 것만 씁니다. 생각·감정·회상은 표정·몸짓·빛·사물로 바꿔 씁니다. 글자·말풍선은 넣지 않습니다.
 
 공통: 감탄사·이모지 없이, 잔혹하거나 선정적인 묘사 없이 씁니다.
 
 그 밖의 항목:
-- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 나이·외모·옷차림 한 문장; 인물이 없으면 빈 문자열).
+- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 '이름: 나이·외모·옷차림' 한 문장; 인물이 없으면 빈 문자열).
 - coverScene: 표지 그림 장면(영어 한두 문장, 이야기의 무대와 핵심 사물).
 - caption: 인스타그램 게시글 본문 2~3문장(한국어, 결말을 밝히지 않음).
 - hashtags: 6~8개, #을 붙인 한국어.
@@ -179,6 +179,49 @@ export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cov
     refLine,
     COMPOSITION[layoutOf(c)],
     'No text, letters, numbers, captions, speech bubbles, logos or watermarks anywhere in the image.',
+  ].filter(Boolean).join('\n');
+}
+
+/* ---------- Canva AI: its image models weigh the start of a prompt most, so the scene goes first ---------- */
+const NAME = "[A-Z][A-Za-z'’-]+(?: [A-Z][A-Za-z'’-]+){0,2}";
+/** Character notes as [name, look] pairs (from "Name: …", "Name — …", "Name, a …"), and notes that name no one. */
+export function parseCharacters(text: string): { named: { name: string; desc: string }[]; general: string } {
+  const t = (text || '').trim();
+  const re = new RegExp(`(?:^|(?<=[.;!?\\n])\\s*)(${NAME})(?:\\s*\\([^)]*\\))?\\s*(?::|\\s[—–-]\\s|,(?=\\s+(?:an?|the)\\s))\\s*`, 'g');
+  const hits = [...t.matchAll(re)];
+  if (!hits.length) return { named: [], general: t };
+  const named = hits.map((m, i) => {
+    const from = m.index! + m[0].length;
+    const to = i + 1 < hits.length ? hits[i + 1].index! : t.length;
+    return { name: m[1], desc: t.slice(from, to).trim().replace(/[.;\s]+$/, '') };
+  }).filter((c) => c.desc);
+  return { named, general: t.slice(0, hits[0].index).trim() };
+}
+
+const CANVA_FRAME = {
+  stack: 'Wide shot, main subject slightly right of center, plain darker lower edge.',
+  full: 'Tall full-frame shot, main subject in the upper part, calm darker lower third.',
+  quote: 'Soft-focus atmospheric backdrop with no clear subject.',
+} as const;
+const sentence = (x: string) => (/[.!?]$/.test(x) ? x : `${x}.`);
+
+/** The prompt for Canva AI: the scene first, then only the people in it, the framing, the art style; no title text. */
+export function canvaPrompt(w: Work, index: number, variant?: string): string {
+  const c = w.cards[index];
+  const scene = c.scene.trim() || `A moment from a Korean short story: ${stripMarks(c.text)}`;
+  const { named, general } = parseCharacters(w.style.characters);
+  const has = (name: string) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(scene);
+  // people named in the scene; a story with one person keeps them even when the scene says "the driver"
+  const who = named.filter((p) => has(p.name) || has(p.name.split(' ')[0]));
+  const people = who.length ? who : named.length === 1 ? named : [];
+  return [
+    sentence(scene),
+    ...people.map((p) => sentence(`${p.name}: ${p.desc}`)),
+    general,
+    CANVA_FRAME[layoutOf(c)],
+    variant ?? '',
+    w.style.prompt.trim() ? `Style: ${w.style.prompt.trim()}` : '',
+    'Illustration only, no lettering.',
   ].filter(Boolean).join('\n');
 }
 

@@ -4,7 +4,7 @@ import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
 import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
-import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SYSTEM_WRITER, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
+import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
 
 export interface TextAI { provider: TextRequest['provider']; key: string; model: string }
 
@@ -130,8 +130,8 @@ export const COVER_VARIANTS = [
 export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string }> {
   const tag = variant ? 'cover' : undefined;
   if (ai.provider === 'canvaai') {
-    // Canva's image API takes no reference pictures: the art style and the characters in every prompt keep the look
-    const out = await canvaAiImage({ prompt: imagePrompt(w, index) + (variant ? `\n${variant}` : ''), aspect: artAspect(w, index) }, signal);
+    // Canva's image API takes no reference pictures: the art style and the people's looks in every prompt keep the look
+    const out = await canvaAiImage({ prompt: canvaPrompt(w, index, variant), aspect: artAspect(w, index) }, signal);
     return { img: await shrinkImage(out.dataUrl) };
   }
   if (ai.provider === 'claude') {
