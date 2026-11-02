@@ -17,7 +17,8 @@ export interface App {
   scheduleRender(): void;
   textAI(): TextAI | null;
   imageAI(): ImageAI | null;
-  openSettings(): void;
+  /** the settings, on one of its tabs (AI keys by default) */
+  openSettings(pane?: 'keys' | 'defaults' | 'prices' | 'connect'): void;
   online(): boolean;
   /** index of the card shown in the preview */
   current(): number;

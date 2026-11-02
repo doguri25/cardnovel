@@ -44,8 +44,8 @@ export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps,
   const clientId = deps.clientId();
   el.hidden = false;
   if (!clientId) {
-    el.innerHTML = `<div class="drive-line"><b>구글 드라이브 백업</b><span class="hint">설정에서 Google OAuth 클라이언트 ID를 넣으면 쓸 수 있어요.</span><button class="btn small" type="button" data-a="settings">설정 열기</button></div>`;
-    el.querySelector('[data-a="settings"]')!.addEventListener('click', () => { closeLibrary(); app.openSettings(); });
+    el.innerHTML = `<div class="drive-line"><b>구글 드라이브 백업</b><span class="hint">처음 한 번 구글 클라이언트 ID를 만들어 설정에 넣으면 쓸 수 있어요. 설정에 단계별 방법이 있어요.</span><button class="btn small" type="button" data-a="settings">설정 방법 보기</button></div>`;
+    el.querySelector('[data-a="settings"]')!.addEventListener('click', () => { closeLibrary(); app.openSettings('connect'); });
     return;
   }
   void loadGis().catch(() => undefined); // ready before the click, so the pop-up is not blocked

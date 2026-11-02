@@ -11,6 +11,7 @@ import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
 import { artHeight, cardHeight, cardSig, ensureFonts, layoutOf, lookSig, renderCard, srcOf, W } from './render';
 import { DEFAULT_SETTINGS, keyFor, loadSettings, maskKey, saveSettings, type Settings } from './settings';
 import { kv, works } from './store';
+import { FOLDER_NAME } from './drive';
 import { daysLeft, dropFromTrash, filterWorks, LIB_SORT_NAME, listTrash, moveToTrash, purgeTrash, takeFromTrash, TRASH_DAYS, type LibSort } from './library';
 import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
 import { captionText, cardFileName, download, fileBase, renderAll as renderAllFiles, renderToBlob, shareCards, zipAll, type ImgFormat } from './export';
@@ -75,7 +76,7 @@ const app: App = {
   scheduleRender: () => scheduleRender(),
   textAI: () => textAI(),
   imageAI: () => imageAI(),
-  openSettings: () => openSettings(),
+  openSettings: (pane) => openSettings(pane),
   online: () => online(),
   current: () => current,
   settings: () => settings,
@@ -977,6 +978,9 @@ function renderAllUI() {
 /* ================= settings ================= */
 type SettingsPane = 'keys' | 'defaults' | 'prices' | 'connect';
 const PANE_NAME: Record<SettingsPane, string> = { keys: 'AI 키', defaults: '새 작품 기본값', prices: '가격 · 품질', connect: '연결' };
+/** A Google OAuth web client ID looks like 1234567890-abc123.apps.googleusercontent.com */
+const isGoogleClientId = (s: string): boolean => /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/i.test(s);
+
 function openSettings(pane: SettingsPane = 'keys') {
   const keyRow = (p: TextProvider, label: string, help: string) => `
     <div class="key-row" data-p="${p}">
@@ -1034,8 +1038,34 @@ function openSettings(pane: SettingsPane = 'keys') {
         <div class="state" data-state></div>
       </div>
       <div class="section-title">구글 드라이브 백업</div>
-      <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '…apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"></div>
-      <p class="hint" style="margin-top:6px">Google Cloud 콘솔에서 만든 ‘웹 애플리케이션’ 클라이언트 ID예요. 승인된 자바스크립트 원본에 ${esc(location.origin)} 을 넣어야 해요.</p>
+      <p class="hint" style="margin-bottom:10px">작품을 내 구글 드라이브의 「${esc(FOLDER_NAME)}」 폴더에 작품마다 파일 하나로 백업하고, 다른 기기에서 이어서 열 수 있어요. 처음 한 번, 내 구글 계정으로 <b>OAuth 클라이언트 ID</b>를 만들어 아래 칸에 넣으면 돼요(10분쯤, 무료).${DEFAULT_GOOGLE_CLIENT_ID ? ' 이 앱에는 기본 ID가 들어 있어 비워 둬도 돼요.' : ''}</p>
+      <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '1234567890-abc….apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"><span class="state" id="gcidState"></span></div>
+      <details class="guide" id="driveGuide" ${settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID ? '' : 'open'}>
+        <summary>클라이언트 ID 만드는 법 (처음 한 번)</summary>
+        <ol>
+          <li><b>Google Cloud 콘솔 열기</b><span><a href="https://console.cloud.google.com/" target="_blank" rel="noopener">console.cloud.google.com</a>에 드라이브를 쓸 구글 계정으로 로그인해요. 처음이면 국가를 고르고 약관에 동의해요.</span></li>
+          <li><b>프로젝트 만들기</b><span>맨 위 프로젝트 선택 상자 → 「새 프로젝트」 → 이름 <code>cardnovel</code> → 「만들기」. 다 만들어지면 위 상자에서 그 프로젝트가 선택돼 있는지 확인해요.</span></li>
+          <li><b>Google Drive API 켜기</b><span>맨 위 검색창에 <code>Google Drive API</code>를 쳐서 결과를 누르고 「사용」을 눌러요. (<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">바로 가기</a>)</span></li>
+          <li><b>동의 화면 만들기</b><span>왼쪽 메뉴 「API 및 서비스 → OAuth 동의 화면」(화면에 따라 「Google 인증 플랫폼」) → 「시작하기」. 앱 이름 <code>카드소설 제작소</code>, 사용자 지원 이메일은 내 이메일 → 대상은 <b>외부</b> → 연락처 이메일 → 동의 → 「만들기」.</span></li>
+          <li><b>나를 테스트 사용자로 넣기</b><span>「대상」 → 「테스트 사용자」의 「+ Add users」 → 드라이브를 쓸 구글 계정 주소 → 「저장」. 게시 상태는 「테스트」 그대로 두면 돼요. 그러면 나와 넣은 사람만 쓸 수 있어요.</span></li>
+          <li><b>권한 범위 넣기</b><span>「데이터 액세스」 → 「범위 추가 또는 삭제」 → 목록에서 <code>.../auth/drive.file</code>을 체크(안 보이면 아래 칸에 붙여 넣고 「테이블에 추가」) → 「업데이트」 → 「저장」. 이 앱은 자기가 만든 파일만 볼 수 있어요.</span></li>
+          <li><b>클라이언트 ID 만들기</b><span>「클라이언트」 → 「+ 클라이언트 만들기」(예전 화면: 「사용자 인증 정보 → 사용자 인증 정보 만들기 → OAuth 클라이언트 ID」). 애플리케이션 유형 <b>웹 애플리케이션</b>, 이름은 아무거나. 「승인된 자바스크립트 원본」 → 「+ URI 추가」에 이 주소를 그대로 넣어요:
+            <span class="copy-line"><code id="originText">${esc(location.origin)}</code><button class="btn tiny" type="button" data-a="copyOrigin">복사</button></span>
+            다른 주소(예: https://3m-novel.vercel.app)로도 쓰면 그 주소도 하나 더 넣어요. 「승인된 리디렉션 URI」는 비워 두고 「만들기」.</span></li>
+          <li><b>ID 붙여 넣기</b><span>나온 창의 「클라이언트 ID」(<code>….apps.googleusercontent.com</code>으로 끝나요)를 복사해 위 칸에 붙여 넣고 「저장하고 닫기」. 「클라이언트 보안 비밀번호」는 필요 없어요. 클라이언트 ID는 비밀번호가 아니라 남에게 보여도 괜찮아요.</span></li>
+          <li><b>연결하기</b><span>「보관함 → 구글 드라이브 백업 → 드라이브 연결」 → 구글 계정을 고르고 허용해요. 「Google에서 확인하지 않은 앱」 창이 뜨면 내가 만든 앱이라 괜찮아요: 「고급」 → 「카드소설 제작소(으)로 이동」 → 「계속」.</span></li>
+        </ol>
+        <div class="guide-help"><b>잘 안 될 때</b>
+          <ul>
+            <li><code>origin_mismatch</code> · <code>redirect_uri_mismatch</code> 오류: 7번의 자바스크립트 원본이 지금 주소(<code>${esc(location.origin)}</code>)와 똑같은지 확인해요. 끝에 <code>/</code>를 붙이지 않아요. 고친 뒤 반영까지 5분쯤 걸릴 수 있어요.</li>
+            <li><code>access_denied</code>(403) 오류: 5번 테스트 사용자에 지금 로그인한 계정을 넣었는지 확인해요.</li>
+            <li>「Google Drive API has not been used…」: 3번을 같은 프로젝트에서 했는지 확인해요.</li>
+            <li>로그인 창이 안 열려요: 브라우저의 팝업 차단을 이 사이트만 풀어 주세요.</li>
+            <li>연결은 한 시간쯤 이어져요. 그 뒤에는 보관함에서 「드라이브 연결」을 한 번 더 누르면 돼요.</li>
+            <li>데스크톱 앱은 저장 공간이 따로라 그 앱의 설정에도 같은 ID를 넣어요. 데스크톱 앱에서 구글 로그인 창이 막히면 웹(${esc(location.origin)})에서 백업해요.</li>
+          </ul>
+        </div>
+      </details>
       </div>
     </div>
     <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)}</span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
@@ -1104,9 +1134,21 @@ function openSettings(pane: SettingsPane = 'keys') {
         shareInput.placeholder = 'cn-…'; shareRow.querySelector<HTMLButtonElement>('[data-a="shareDel"]')!.disabled = true;
         shareState('지웠어요.');
       });
+      box.querySelector('[data-a="copyOrigin"]')?.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(location.origin); toast('주소를 복사했어요.'); } catch { toast('복사가 막혔어요. 주소를 직접 골라 복사해 주세요.'); }
+      });
       box.querySelector('[data-a="done"]')!.addEventListener('click', async () => {
         const v = (id: string) => (box.querySelector<HTMLInputElement>('#' + id)!.value);
-        settings.googleClientId = v('googleClientId').trim();
+        const gcid = v('googleClientId').trim();
+        if (gcid && !isGoogleClientId(gcid)) {
+          show('connect');
+          const st = box.querySelector<HTMLElement>('#gcidState')!;
+          st.textContent = /GOCSPX|secret/i.test(gcid) ? '이건 「클라이언트 보안 비밀번호」 같아요. 「클라이언트 ID」(….apps.googleusercontent.com)를 넣어 주세요.' : '클라이언트 ID는 ….apps.googleusercontent.com 으로 끝나요. 다시 복사해 주세요.';
+          st.className = 'state bad';
+          box.querySelector<HTMLInputElement>('#googleClientId')!.focus();
+          return;
+        }
+        settings.googleClientId = gcid;
         settings.series = v('setSeries').trim();
         settings.handle = v('setHandle').trim();
         settings.follow = v('setFollow').trim();
@@ -1725,6 +1767,11 @@ async function handleCanvaLanding() {
   history.replaceState(null, '', url.pathname);
   if (l.kind === 'connected') {
     if (work.imageAI.provider !== 'canva') { work.imageAI = { provider: 'canva', model: '' }; save(); void renderImageAI(); buildCardList(); }
+    // make sure the browser really kept the sign-in before saying so
+    if ((await canvaStatus()) === false) {
+      toast('Canva 로그인은 됐는데 이 브라우저에 연결 정보가 저장되지 않았어요. 이 사이트의 쿠키 차단을 풀고 「Canva 연결하기」를 다시 눌러 주세요.', 9000);
+      return;
+    }
     toast('Canva에 연결했어요. 카드의 「Canva에서 그리기」를 눌러 주세요.', 5000);
     return;
   }

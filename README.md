@@ -27,6 +27,8 @@ npm run build
 
 ### Canva 연결 설정
 
+Canva 토큰(접근 토큰만 최대 4KB)은 압축·암호화해 `cn_t0`, `cn_t1`… 여러 쿠키로 나눠 담는다(브라우저는 쿠키 하나에 4KB까지만 저장). 로그인 뒤 돌아왔을 때 연결 정보가 실제로 저장됐는지 다시 확인한다.
+
 | 위치 | 값 |
 | --- | --- |
 | Canva 개발자 포털 → Authorized redirects | `https://cardnovel.vercel.app/api/canva/callback` |
@@ -49,7 +51,7 @@ Canva 토큰은 `/api/canva` 경로에만 붙는 암호화된 HttpOnly 쿠키에
 
 ### 구글 드라이브 백업 설정
 
-브라우저만으로 동작하고 서버를 거치지 않는다. 권한은 앱이 만든 파일만 다루는 `drive.file` 하나다. 처음 한 번 Google Cloud에서 OAuth 클라이언트를 만든다.
+브라우저만으로 동작하고 서버를 거치지 않는다. 권한은 앱이 만든 파일만 다루는 `drive.file` 하나다. 처음 한 번 Google Cloud에서 OAuth 클라이언트를 만든다. 같은 안내가 앱 「설정 → 연결」에 단계별로(지금 주소 복사 버튼, 자주 나는 오류 풀이 포함) 들어 있고, 클라이언트 보안 비밀번호처럼 잘못된 값을 넣으면 저장 전에 알려 준다.
 
 1. https://console.cloud.google.com 에서 프로젝트를 하나 만든다(이름 예: cardnovel).
 2. 「API 및 서비스 → 라이브러리」에서 **Google Drive API**를 사용 설정한다.

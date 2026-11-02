@@ -723,3 +723,18 @@ button.link:hover { text-decoration-color: currentColor; }
 .trash-head .hint { flex: 1; }
 .work.trashed img, .work.trashed .noimg { filter: grayscale(.8); opacity: .7; }
 @media (max-width: 760px) { .palette > .hint { display: none; } }
+
+/* ---------- settings: Google Drive set-up guide ---------- */
+.field > .state { font-size: 12px; color: var(--muted); min-height: 16px; margin-top: 4px; }
+.field > .state.bad { color: var(--primary); }
+.guide { margin-top: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.guide > summary { cursor: pointer; padding: 10px 14px; font-weight: 700; font-size: 13.5px; }
+.guide ol { margin: 0; padding: 0 14px 4px 34px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 1.65; }
+.guide li > b { display: block; }
+.guide li > span { color: var(--text); }
+.guide code { font-size: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; word-break: break-all; }
+.guide a { color: var(--primary); }
+.guide .copy-line { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.guide .copy-line code { font-size: 13px; padding: 3px 8px; }
+.guide-help { margin: 10px 14px 14px; padding: 10px 12px; border-radius: 10px; background: var(--surface); font-size: 12.5px; line-height: 1.6; }
+.guide-help ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--muted); }

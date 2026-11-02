@@ -11,8 +11,8 @@ export async function GET(req: Request): Promise<Response> {
   const pkce = await readPkce(req).catch(() => null);
   if (!code || !state || !pkce || pkce.s !== state) return back('state');
   try {
-    const tokenCookie = await exchangeCode(code, pkce.v);
-    return redirect('/?canva=connected', [tokenCookie, clearPkce()]);
+    const tokenCookies = await exchangeCode(code, pkce.v);
+    return redirect('/?canva=connected', [...tokenCookies, clearPkce()]);
   } catch (e) {
     return back(e instanceof Error ? e.message.slice(0, 80) : 'token');
   }

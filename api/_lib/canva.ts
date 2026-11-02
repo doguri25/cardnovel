@@ -6,7 +6,12 @@ export const AUTHORIZE_URL = 'https://www.canva.com/api/oauth/authorize';
 export const KEYS_URL = 'https://api.canva.com/rest/v1/connect/keys';
 export const SCOPES = 'asset:read asset:write design:content:read design:content:write design:meta:read';
 
+/** the old single token cookie (still read, always cleared): a large Canva token made it too big for browsers */
 const TOKEN_COOKIE = 'cn_tok';
+/** the token now lives in pieces cn_t0, cn_t1, … each well under the 4 KB a browser keeps per cookie */
+const PIECE_PREFIX = 'cn_t';
+const PIECE_SIZE = 3800;
+const MAX_PIECES = 6;
 const PKCE_COOKIE = 'cn_pkce';
 const COOKIE_PATH = '/api/canva';
 
@@ -46,19 +51,49 @@ async function aesKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 export async function seal(value: unknown, secret: string): Promise<string> {
+  return sealBytes(new TextEncoder().encode(JSON.stringify(value)), secret);
+}
+async function sealBytes(data: Uint8Array<ArrayBuffer>, secret: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = new TextEncoder().encode(JSON.stringify(value));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(secret), data));
   const out = new Uint8Array(iv.length + ct.length);
   out.set(iv); out.set(ct, iv.length);
   return b64url(out);
 }
-export async function unseal<T>(sealed: string, secret: string): Promise<T | null> {
+async function unsealBytes(sealed: string, secret: string): Promise<Uint8Array<ArrayBuffer> | null> {
   try {
     const all = fromB64url(sealed);
     const iv = all.slice(0, 12), ct = all.slice(12);
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(secret), ct);
-    return JSON.parse(new TextDecoder().decode(pt)) as T;
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(secret), ct));
+  } catch {
+    return null;
+  }
+}
+export async function unseal<T>(sealed: string, secret: string): Promise<T | null> {
+  const pt = await unsealBytes(sealed, secret);
+  if (!pt) return null;
+  try { return JSON.parse(new TextDecoder().decode(pt)) as T; } catch { return null; }
+}
+
+/* ---------- deflate (tokens are long base64 text and shrink by about a quarter) ---------- */
+async function pipe(data: Uint8Array<ArrayBuffer>, stream: CompressionStream | DecompressionStream): Promise<Uint8Array<ArrayBuffer>> {
+  return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(stream)).arrayBuffer());
+}
+/** 'z' + sealed deflated JSON, or 'p' + sealed JSON where compression is not available */
+export async function sealCompact(value: unknown, secret: string): Promise<string> {
+  const json = new TextEncoder().encode(JSON.stringify(value));
+  if (typeof CompressionStream === 'function') {
+    try { return 'z' + (await sealBytes(await pipe(json, new CompressionStream('deflate')), secret)); } catch { /* fall back to plain */ }
+  }
+  return 'p' + (await sealBytes(json, secret));
+}
+export async function unsealCompact<T>(sealed: string, secret: string): Promise<T | null> {
+  const kind = sealed[0];
+  const pt = await unsealBytes(sealed.slice(1), secret);
+  if (!pt) return null;
+  try {
+    const text = kind === 'z' ? new TextDecoder().decode(await pipe(pt, new DecompressionStream('deflate'))) : new TextDecoder().decode(pt);
+    return JSON.parse(text) as T;
   } catch {
     return null;
   }
@@ -118,29 +153,50 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenSet> {
   return { a: body.access_token, r: body.refresh_token || params.refresh_token || '', e: Date.now() + (body.expires_in ?? 3600) * 1000 };
 }
 
-export async function exchangeCode(code: string, verifier: string): Promise<string> {
+/** Set-Cookie headers for the exchanged token. */
+export async function exchangeCode(code: string, verifier: string): Promise<string[]> {
   const t = await tokenRequest({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: env('CANVA_REDIRECT_URI') });
-  return tokenCookie(t);
+  return tokenCookies(t);
 }
-const tokenCookie = async (t: TokenSet): Promise<string> => cookie(TOKEN_COOKIE, await seal(t, env('SESSION_SECRET')), 60 * 60 * 24 * 90);
-export const clearToken = (): string => clearCookie(TOKEN_COOKIE);
+const TOKEN_MAX_AGE = 60 * 60 * 24 * 90;
+/** The token, compressed and sealed, split over as many pieces as it needs; unused pieces and the old cookie are cleared. */
+export async function tokenCookies(t: TokenSet): Promise<string[]> {
+  const sealed = await sealCompact(t, env('SESSION_SECRET'));
+  const pieces = sealed.match(new RegExp(`.{1,${PIECE_SIZE}}`, 'g')) ?? [];
+  if (pieces.length > MAX_PIECES) throw new HttpError(502, 'token_too_large', 'Canva token does not fit in cookies');
+  return [
+    ...pieces.map((p, i) => cookie(PIECE_PREFIX + i, p, TOKEN_MAX_AGE)),
+    ...Array.from({ length: MAX_PIECES - pieces.length }, (_, k) => clearCookie(PIECE_PREFIX + (pieces.length + k))),
+    clearCookie(TOKEN_COOKIE),
+  ];
+}
+/** Logout: every piece and the old single cookie. */
+export const clearToken = (): string[] => [...Array.from({ length: MAX_PIECES }, (_, i) => clearCookie(PIECE_PREFIX + i)), clearCookie(TOKEN_COOKIE)];
+
+async function readToken(req: Request): Promise<TokenSet | null> {
+  const pieces: string[] = [];
+  for (let i = 0; i < MAX_PIECES; i++) {
+    const p = readCookie(req, PIECE_PREFIX + i);
+    if (!p) break;
+    pieces.push(p);
+  }
+  if (pieces.length) return unsealCompact<TokenSet>(pieces.join(''), env('SESSION_SECRET'));
+  const old = readCookie(req, TOKEN_COOKIE);
+  return old ? unseal<TokenSet>(old, env('SESSION_SECRET')) : null;
+}
 
 /** The user's access token, refreshed when it is about to expire. `setCookies` carries a renewed cookie back. */
 export async function accessToken(req: Request): Promise<{ token: string; setCookies: string[] }> {
-  const c = readCookie(req, TOKEN_COOKIE);
-  const t = c ? await unseal<TokenSet>(c, env('SESSION_SECRET')) : null;
+  const t = await readToken(req);
   if (!t) throw new HttpError(401, 'not_connected', 'Canva is not connected');
   if (t.e - Date.now() > 60_000) return { token: t.a, setCookies: [] };
   if (!t.r) throw new HttpError(401, 'not_connected', 'Canva session expired');
   // refresh tokens are single-use: the new one replaces the old one in the cookie
   const fresh = await tokenRequest({ grant_type: 'refresh_token', refresh_token: t.r });
-  return { token: fresh.a, setCookies: [await tokenCookie(fresh)] };
+  return { token: fresh.a, setCookies: await tokenCookies(fresh) };
 }
 
-export const isConnected = async (req: Request): Promise<boolean> => {
-  const c = readCookie(req, TOKEN_COOKIE);
-  return !!(c && (await unseal<TokenSet>(c, env('SESSION_SECRET'))));
-};
+export const isConnected = async (req: Request): Promise<boolean> => !!(await readToken(req));
 
 /* ---------- Canva REST calls ---------- */
 export async function canva<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {

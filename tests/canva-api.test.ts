@@ -84,7 +84,7 @@ describe('routes', () => {
     expect(url).toBe('https://api.canva.com/rest/v1/oauth/token');
     expect((init.headers as Record<string, string>).Authorization).toBe('Basic ' + btoa('OC-test:cnvca-test'));
     expect(String(init.body)).toContain('grant_type=authorization_code');
-    expect(res.headers.get('set-cookie')).toContain('cn_tok=');
+    expect(res.headers.get('set-cookie')).toMatch(/cn_t0=[^;]+;/);
   });
   it('status says whether the token cookie is there', async () => {
     expect(await (await status(new Request('https://x/api/canva/status'))).json()).toEqual({ connected: false });
@@ -131,7 +131,7 @@ describe('routes', () => {
       method: 'POST', headers: { cookie: await tokenCookie(Date.now() + 1000) }, body: JSON.stringify({ width: 1080, height: 640, state: 'w1~c1' }),
     }));
     expect(res.status).toBe(200);
-    expect(res.headers.get('set-cookie')).toContain('cn_tok=');
+    expect(res.headers.get('set-cookie')).toMatch(/cn_t0=[^;]+;/);
   });
   it('export waits for the job and returns the PNG bytes', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -144,6 +144,49 @@ describe('routes', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
+  });
+});
+
+describe('large Canva tokens (access tokens can be up to 4 KB)', () => {
+  const big = (n: number, seed: string) => Array.from({ length: n }, (_, i) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[(i * 7 + seed.charCodeAt(i % seed.length)) % 64]).join('');
+  /** what a browser would send back: only cookies whose name=value fits in 4096 bytes */
+  const browserKeeps = (setCookies: string[]) => setCookies
+    .map((c) => c.split(';')[0])
+    .filter((nv) => nv.length <= 4096 && !/=$/.test(nv) && !/Max-Age=0/.test(nv));
+  const kept = (res: Response) => browserKeeps(res.headers.getSetCookie()).filter((nv) => nv.startsWith('cn_t'));
+  it('stores a 4 KB token in cookies a browser accepts, and status reads it back', async () => {
+    const lres = await login();
+    const pk = lres.headers.get('set-cookie')!.split(';')[0];
+    const state = new URL(lres.headers.get('location')!).searchParams.get('state');
+    vi.stubGlobal('fetch', vi.fn(async () => json({ access_token: big(4000, 'access'), refresh_token: big(1500, 'refresh'), expires_in: 14400 })));
+    const res = await callback(new Request(`https://cardnovel.vercel.app/api/canva/callback?code=abc&state=${state}`, { headers: { cookie: pk } }));
+    expect(res.headers.get('location')).toBe('/?canva=connected');
+    for (const c of res.headers.getSetCookie()) expect(c.split(';')[0].length).toBeLessThanOrEqual(4096);
+    const jar = kept(res).join('; ');
+    expect(jar.length).toBeLessThan(7000); // the whole Cookie header stays small
+    expect(await (await status(new Request('https://x/api/canva/status', { headers: { cookie: jar } }))).json()).toEqual({ connected: true });
+  });
+  it('a refreshed large token replaces the old pieces, and logout clears them all', async () => {
+    const lres = await login();
+    const pk = lres.headers.get('set-cookie')!.split(';')[0];
+    const state = new URL(lres.headers.get('location')!).searchParams.get('state');
+    vi.stubGlobal('fetch', vi.fn(async () => json({ access_token: big(4000, 'one'), refresh_token: big(1500, 'two'), expires_in: 0 })));
+    const first = await callback(new Request(`https://cardnovel.vercel.app/api/canva/callback?code=abc&state=${state}`, { headers: { cookie: pk } }));
+    const jar = kept(first).join('; ');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/oauth/token')) return json({ access_token: 'SMALL', refresh_token: 'R3', expires_in: 14400 });
+      if (url.endsWith('/designs')) return json({ design: { id: 'D3', urls: { edit_url: 'https://www.canva.com/api/design/q' } } });
+      return json({}, 404);
+    }));
+    const res = await design(new Request('https://x/api/canva/design', { method: 'POST', headers: { cookie: jar }, body: JSON.stringify({ width: 1080, height: 640, state: 'w1~c1' }) }));
+    expect(res.status).toBe(200);
+    const sets = res.headers.getSetCookie();
+    expect(sets.some((c) => /^cn_t0=[^;]+;/.test(c) && !/Max-Age=0/.test(c))).toBe(true);
+    expect(sets.filter((c) => /Max-Age=0/.test(c)).length).toBeGreaterThan(0); // leftover pieces of the big token are removed
+    const { POST: logout } = await import('../api/_canva/logout');
+    const out = await logout();
+    const cleared = out.headers.getSetCookie().filter((c) => /Max-Age=0/.test(c)).map((c) => c.split('=')[0]);
+    for (const nv of kept(first)) expect(cleared).toContain(nv.split('=')[0]);
   });
 });
 
