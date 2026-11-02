@@ -72,6 +72,10 @@ export const kv = {
     if (!useLS) { try { await tx('kv', 'readwrite', (s) => s.put(v, key)); return; } catch { useLS = true; } }
     LS.write('cardnovel.kv.' + key, v);
   },
+  async del(key: string): Promise<void> {
+    if (!useLS) { try { await tx('kv', 'readwrite', (s) => s.delete(key)); return; } catch { useLS = true; } }
+    try { localStorage.removeItem('cardnovel.kv.' + key); } catch { /* fine */ }
+  },
 };
 
 export const storageKind = (): 'indexeddb' | 'localstorage' => (useLS ? 'localstorage' : 'indexeddb');

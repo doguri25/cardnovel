@@ -30,7 +30,7 @@ export const aiMessage = (e: unknown): string => {
 };
 
 /* ================= usage (tokens and pictures per call) ================= */
-export type UsageTag = 'compose' | 'rewrite' | 'outro' | 'summary' | 'review' | 'proof' | 'insight' | 'bible' | 'svg' | 'image' | 'refsheet' | 'cover' | 'tts' | 'other';
+export type UsageTag = 'compose' | 'rewrite' | 'outro' | 'summary' | 'review' | 'proof' | 'insight' | 'caption' | 'bible' | 'svg' | 'image' | 'refsheet' | 'cover' | 'tts' | 'other';
 export interface UsageEvent {
   provider: TextProvider;
   model: string;

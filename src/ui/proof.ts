@@ -18,6 +18,12 @@ const stateOf = (app: App, it: ProofItem): State => {
   return now === it.to ? 'done' : now === it.from ? 'open' : 'stale';
 };
 
+/** Whether this work was proofread in this session, and how many fixes are still waiting (for 게시 전 점검). */
+export function proofSummary(app: App): { ran: boolean; open: number } {
+  const r = results.get(app.work().id);
+  return { ran: !!r, open: r ? r.items.filter((it) => stateOf(app, it) === 'open').length : 0 };
+}
+
 const showSpace = (s: string) => esc(s).replace(/ /g, '<span class="sp"> </span>').replace(/\n/g, '<span class="nl">↵</span>');
 function diffHTML(a: string, b: string): string {
   return diffWords(a, b).map((p) => (p.op === 'eq' ? esc(p.text).replace(/\n/g, '<br>') : p.op === 'del' ? `<del>${showSpace(p.text)}</del>` : `<ins>${showSpace(p.text)}</ins>`)).join('');
@@ -87,12 +93,7 @@ export function wireProof(app: App): void {
     const r = results.get(w.id);
     if (!r) return;
     const go = el.closest<HTMLElement>('[data-go]');
-    if (go) {
-      const i = Number(go.dataset.go);
-      app.select(i);
-      document.querySelector<HTMLElement>(`.card-row[data-i="${i}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
+    if (go) { app.goCard(Number(go.dataset.go)); return; }
     const fresh = !!w.review && w.review.sig === textSig(w);
     const one = el.closest<HTMLElement>('[data-apply]');
     if (one) {
@@ -101,6 +102,7 @@ export function wireProof(app: App): void {
       app.pushUndo();
       if (!applyProof(w, it)) { toast('글이 바뀌어서 적용하지 못했어요.'); renderProof(app); return; }
       afterChange(app, fresh, [it.index]);
+      app.undoToast(`${it.label}을(를) 고쳤어요.`);
       return;
     }
     const back = el.closest<HTMLElement>('[data-revert]');
@@ -120,7 +122,7 @@ export function wireProof(app: App): void {
       app.pushUndo();
       const done = todo.filter((it) => applyProof(w, it));
       afterChange(app, fresh, done.map((it) => it.index));
-      toast(`${done.length}곳을 고쳤어요. 「되돌리기」나 버전 기록으로 돌아갈 수 있어요.`);
+      app.undoToast(`${done.length}곳을 고쳤어요. 버전 기록에도 고치기 전 상태가 남아 있어요.`);
     }
   });
 }

@@ -5,7 +5,7 @@ import { reviewWork, totalScore } from '../ai/review';
 import { REVIEW_AXES, textSig, type ReviewAxis } from '../model';
 import { reviewHistory } from '../posts';
 import { works } from '../store';
-import { $, esc, fmtDate, setStatus, toast } from './dom';
+import { $, esc, fmtDate, setStatus } from './dom';
 
 let ctl: AbortController | null = null;
 const num = (i: number) => String(i + 1).padStart(2, '0');
@@ -66,12 +66,7 @@ export function wireReview(app: App): void {
     const r = w.review;
     if (!r) return;
     const go = el.closest<HTMLElement>('[data-go]');
-    if (go) {
-      const i = Number(go.dataset.go);
-      app.select(i);
-      document.querySelector<HTMLElement>(`.card-row[data-i="${i}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
+    if (go) { app.goCard(Number(go.dataset.go)); return; }
     const apply = el.closest<HTMLElement>('[data-apply]');
     if (apply) {
       const n = r.notes[Number(apply.dataset.apply)];
@@ -82,7 +77,7 @@ export function wireReview(app: App): void {
       card.text = n.suggestion;
       keepFresh(app, fresh);
       app.save(); app.refreshRow(n.index); app.scheduleRender(); renderReview(app);
-      toast(`${num(n.index)}번 카드를 바꿨어요. 「되돌리기」로 돌아갈 수 있어요.`);
+      app.undoToast(`${num(n.index)}번 카드를 바꿨어요.`);
       return;
     }
     const title = el.closest<HTMLElement>('[data-title]');
@@ -95,7 +90,7 @@ export function wireReview(app: App): void {
       if (x.hook) w.cards[0].text = x.hook;
       keepFresh(app, fresh);
       app.save(); app.refreshRow(0); app.scheduleRender(); renderReview(app);
-      toast('표지 제목과 훅을 바꿨어요.');
+      app.undoToast('표지 제목과 훅을 바꿨어요.');
     }
   });
 }

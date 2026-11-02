@@ -10,12 +10,26 @@ export const esc = (s: unknown): string =>
   String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 let toastTimer = 0;
-export function toast(msg: string, ms = 3200): void {
+export interface ToastAction { label: string; run: () => void }
+/** A short notice at the bottom. With `action` it carries one button (for example 「되돌리기」) and stays a little longer. */
+export function toast(msg: string, ms = 3200, action?: ToastAction): void {
   const t = $('toast');
-  t.textContent = msg;
+  t.textContent = '';
+  const text = document.createElement('span');
+  text.textContent = msg;
+  t.appendChild(text);
+  t.classList.toggle('has-action', !!action);
+  if (action) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { t.classList.remove('show'); clearTimeout(toastTimer); action.run(); }, { once: true });
+    t.appendChild(b);
+  }
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => t.classList.remove('show'), ms);
+  const hide = () => t.classList.remove('show');
+  toastTimer = window.setTimeout(hide, action ? Math.max(ms, 6500) : ms);
 }
 
 export function setStatus(el: HTMLElement, msg: string, kind: '' | 'busy' | 'error' = ''): void {

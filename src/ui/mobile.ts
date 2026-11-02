@@ -1,23 +1,10 @@
 // Phone layout: five tabs at the bottom (story, cards, look, review, export), one card at a time with a small
-// preview you can swipe, and the app-bar buttons in a menu.
+// preview you can swipe, and the app-bar buttons in a menu. The tabs themselves live in steps.ts.
 import type { App } from '../app';
 import { $, openModal } from './dom';
+import { isPhone } from './steps';
 
-export type Tab = 'story' | 'cards' | 'look' | 'review' | 'export';
-const TABS: Tab[] = ['story', 'cards', 'look', 'review', 'export'];
-const mq = typeof matchMedia === 'function' ? matchMedia('(max-width: 760px)') : null;
-export const isPhone = (): boolean => !!mq?.matches;
-
-export function setTab(t: Tab): void {
-  document.body.dataset.tab = t;
-  document.querySelectorAll<HTMLButtonElement>('#mTabs button').forEach((b) => {
-    const on = b.dataset.tab === t;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-current', on ? 'page' : 'false');
-  });
-  try { sessionStorage.setItem('cardnovel.tab', t); } catch { /* fine */ }
-  if (isPhone()) window.scrollTo({ top: 0 });
-}
+export { isPhone, setTab } from './steps';
 
 /** Copies the big preview into the small one above the card being edited (phone, cards tab). */
 export function paintMini(): void {
@@ -28,14 +15,7 @@ export function paintMini(): void {
   dst.getContext('2d')!.drawImage(src, 0, 0, dst.width, dst.height);
 }
 
-export function wireMobile(app: App, hasStory: () => boolean): void {
-  let saved: string | null = null;
-  try { saved = sessionStorage.getItem('cardnovel.tab'); } catch { /* fine */ }
-  setTab(TABS.includes(saved as Tab) ? (saved as Tab) : hasStory() ? 'cards' : 'story');
-  $('mTabs').addEventListener('click', (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-tab]');
-    if (b) setTab(b.dataset.tab as Tab);
-  });
+export function wireMobile(app: App): void {
   const go = (d: number) => app.select((app.current() + d + 20) % 20);
   $('mPrev').addEventListener('click', () => go(-1));
   $('mNext').addEventListener('click', () => go(1));
@@ -58,7 +38,7 @@ export function wireMobile(app: App, hasStory: () => boolean): void {
 
   $('btnSaveAllM').addEventListener('click', () => $('btnSaveAll').click());
   $('btnMenu').addEventListener('click', () => {
-    const items: [string, string][] = [['btnLibrary', '보관함'], ['btnVersions', '버전 기록'], ['btnSettings', '설정'], ['btnUsage', '사용량 · 비용'], ['btnCaption', '캡션 복사'], ['btnSaveAll', '전체 ZIP 저장']];
+    const items: [string, string][] = [['btnPalette', '빠른 실행 (찾아서 하기)'], ['btnLibrary', '보관함'], ['btnVersions', '버전 기록'], ['btnSettings', '설정'], ['btnUsage', '사용량 · 비용'], ['btnCaption', '캡션 복사'], ['btnSaveAll', '전체 ZIP 저장']];
     openModal(`<div class="panel-head"><h2>메뉴</h2></div><div class="m-menu">${items.map(([id, label]) => `<button class="btn" type="button" data-id="${id}">${label}</button>`).join('')}</div>`, {
       wire: (box, close) => box.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((b) => b.addEventListener('click', () => { close(); $(b.dataset.id!).click(); })),
     });

@@ -24,6 +24,8 @@ export interface PostRow {
   /** interactions weighted toward what Instagram values most (comments, saves, shares, follows) */
   score: number;
   url: string;
+  /** hashtags used on the post (as logged), lower case without '#' differences */
+  tags: string[];
 }
 
 const v = (x: number | null | undefined) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : 0);
@@ -46,7 +48,30 @@ export function rowOf(w: Work, p: PostRecord): PostRow {
     rate: reach ? Math.min(1, interactions / reach) : null,
     score: likes + 2 * comments + 3 * saves + 3 * shares + 5 * follows,
     url: p.url,
+    tags: (p.tags ?? []).map(normTag).filter(Boolean),
   };
+}
+
+/** '#카드소설' and '카드소설 ' are the same tag. */
+export const normTag = (t: string): string => {
+  const x = String(t || '').trim().replace(/^#+/, '').replace(/\s+/g, '');
+  return x ? '#' + x : '';
+};
+
+export interface TagStat { tag: string; n: number; value: number }
+/** How posts with each hashtag did (the same measure as everywhere else), best first; only tags used `min` times or more. */
+export function tagStats(rows: PostRow[], min = 2): TagStat[] {
+  const rate = usesRate(rows);
+  const m = new Map<string, { n: number; sum: number }>();
+  for (const r of rows) {
+    if (rate && r.rate === null) continue;
+    for (const t of new Set(r.tags)) {
+      const g = m.get(t) ?? { n: 0, sum: 0 };
+      g.n++; g.sum += measure(r, rate);
+      m.set(t, g);
+    }
+  }
+  return [...m.entries()].filter(([, g]) => g.n >= min).map(([tag, g]) => ({ tag, n: g.n, value: g.sum / g.n })).sort((a, b) => b.value - a.value || b.n - a.n);
 }
 
 /** Every post with numbers, newest first. */

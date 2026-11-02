@@ -27,4 +27,12 @@ export interface App {
   renderLook(): void;
   /** keeps a version of the open work in the history (never fails) */
   keepVersion(reason: VersionReason): Promise<void>;
+  /** shows a card for editing: its step, the card selected and scrolled to, optionally its text focused */
+  goCard(i: number, focus?: boolean): void;
+  /** undoes the last text change */
+  undo(): void;
+  /** a notice with a 「되돌리기」 button for the change just made */
+  undoToast(msg: string): void;
+  /** the caption and hashtag helper */
+  openCaption(): void;
 }

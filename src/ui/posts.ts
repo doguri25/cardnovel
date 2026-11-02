@@ -156,7 +156,7 @@ export function openPosts(app: App, tab: 'mine' | 'all' = 'mine'): void {
       q('[data-a="add"]').addEventListener('click', () => {
         const ws = app.work();
         const last = (ws.posts ?? []).length;
-        ws.posts = [...(ws.posts ?? []), newPost()];
+        ws.posts = [...(ws.posts ?? []), newPost(Date.now(), ws.hashtags)];
         app.save(); paint();
         if (!last) toast('올린 시각은 지금으로 넣었어요. 다르면 고쳐 주세요.');
         list.querySelector<HTMLInputElement>('.post-rec [data-f="reach"]')?.focus();

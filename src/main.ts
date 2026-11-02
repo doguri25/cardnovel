@@ -4,13 +4,14 @@ import { compose, drawCard, drawCharacterSheet, rewriteCard, summarize, writeOut
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
-  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, workTitle,
+  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, stripMarks, textSig, workTitle,
   type Card, type CardLayout, type ImageProvider, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
 import { artHeight, cardHeight, cardSig, ensureFonts, layoutOf, lookSig, renderCard, srcOf, W } from './render';
 import { DEFAULT_SETTINGS, keyFor, loadSettings, maskKey, saveSettings, type Settings } from './settings';
 import { kv, works } from './store';
+import { daysLeft, dropFromTrash, filterWorks, LIB_SORT_NAME, listTrash, moveToTrash, purgeTrash, takeFromTrash, TRASH_DAYS, type LibSort } from './library';
 import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
 import { captionText, cardFileName, download, fileBase, renderAll as renderAllFiles, renderToBlob, shareCards, zipAll, type ImgFormat } from './export';
 import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, toast } from './ui/dom';
@@ -22,7 +23,11 @@ import { openCoverCandidates } from './ui/cover';
 import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
 import { openVersions, type VersionDeps } from './ui/versions';
-import { isPhone, paintMini, setTab, wireMobile } from './ui/mobile';
+import { paintMini, wireMobile } from './ui/mobile';
+import { onTabChange, restoreTabs, setTab, wireSteps, type Tab } from './ui/steps';
+import { openPalette, type Command } from './ui/palette';
+import { okToPost, renderPrecheck } from './ui/precheck';
+import { openCaption } from './ui/caption';
 import { isStaleChunkError, newVersionReady, watchForUpdates } from './ui/update';
 import { deleteAllVersions, saveVersion, versionsAvailable, type VersionReason } from './versions';
 import { brandHint, openBrandEditor, openThemeEditor, setBrandOn } from './ui/look';
@@ -77,20 +82,36 @@ const app: App = {
   saveSettings: () => saveSettings(settings),
   renderLook: () => renderLook(),
   keepVersion: (reason) => keepVersion(reason),
+  goCard: (i, focus) => goCard(i, focus),
+  undo: () => undo(),
+  undoToast: (msg) => undoToast(msg),
+  openCaption: () => openCaptionHelper(),
 };
 const shareDeps: ShareDeps = { key: () => settings.shareKey };
 const finishDeps: FinishDeps = { login: () => goCanvaLogin(), refreshAll: () => { buildCardList(); scheduleRender(); } };
 const driveDeps: DriveDeps = { clientId: () => settings.googleClientId || DEFAULT_GOOGLE_CLIENT_ID, defaults: () => defaults(), reopenLibrary: () => void openLibrary() };
 let reviewTimer = 0;
 const scheduleReview = () => { clearTimeout(reviewTimer); reviewTimer = window.setTimeout(() => { renderReview(app); renderProof(app); }, 700); };
+/** the step tabs' little status lines and the pre-publish check follow every change, a moment later */
+let checksTimer = 0;
+const scheduleChecks = () => { clearTimeout(checksTimer); checksTimer = window.setTimeout(() => { renderStepStatus(); renderPrecheck(app); }, 500); };
+function renderStepStatus() {
+  const body = work.cards.filter((c) => c.kind === 'body');
+  const filled = body.filter((c) => c.text.trim()).length;
+  const pics = work.cards.filter((c) => c.kind !== 'outro' && (c.img || c.svg)).length;
+  $('stStory').textContent = filled ? '구성함' : work.source.text.trim() ? '입력함' : '';
+  $('stCards').textContent = filled ? `글 ${filled}/${BODY_COUNT} · 그림 ${pics}/${BODY_COUNT + 1}` : '';
+  const r = work.review;
+  $('stReview').textContent = r ? `${Object.values(r.scores).reduce((a, b) => a + b, 0)}점${r.sig !== textSig(work) ? ' (이전 글)' : ''}` : filled ? '평가 전' : '';
+}
 
 /* ================= undo (text and order, last 20 steps) ================= */
-interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind; caption: string }
+interface Snap { order: string[]; fields: Record<string, Pick<Card, 'label' | 'showLabel' | 'title' | 'text' | 'scene' | 'accent'>>; outroKind: OutroKind; caption: string; hashtags: string[] }
 const undoStack: Snap[] = [];
 function snapshot(): Snap {
   const fields: Snap['fields'] = {};
   work.cards.forEach((c) => { fields[c.id] = { label: c.label, showLabel: c.showLabel, title: c.title, text: c.text, scene: c.scene, accent: c.accent }; });
-  return { order: work.cards.map((c) => c.id), fields, outroKind: work.outroKind, caption: work.caption };
+  return { order: work.cards.map((c) => c.id), fields, outroKind: work.outroKind, caption: work.caption, hashtags: [...work.hashtags] };
 }
 function pushUndo() {
   undoStack.push(snapshot());
@@ -113,8 +134,18 @@ function undo() {
   work.cards.forEach((c) => Object.assign(c, s.fields[c.id]));
   work.outroKind = s.outroKind;
   work.caption = s.caption;
+  work.hashtags = [...s.hashtags];
   save(); renderAllUI();
   toast('되돌렸어요.');
+}
+
+/** A notice with 「되돌리기」 for the change just made; it only undoes that change, not a later one. */
+function undoToast(msg: string) {
+  const depth = undoStack.length;
+  toast(msg, 6500, { label: '되돌리기', run: () => {
+    if (undoStack.length === depth) undo();
+    else toast('그 뒤에 다른 변경이 있어요. 카드 편집의 「되돌리기」를 써 주세요.');
+  } });
 }
 
 /* ================= versions ================= */
@@ -146,6 +177,7 @@ let persistTimer = 0, dirty = false, thumbSig = '';
 const pictureBytes = (w: Work): number => w.cards.reduce((n, c) => n + (c.img?.length ?? 0) + (c.svg?.length ?? 0), 0)
   + (w.finished?.images.reduce((n, x) => n + x.length, 0) ?? 0) + (w.style.refImage?.length ?? 0);
 function save() {
+  scheduleChecks();
   // always forward, even when the copy came from a device whose clock runs ahead: an edit here must read as newer
   work.updatedAt = Math.max(Date.now(), (work.updatedAt || 0) + 1);
   dirty = true;
@@ -333,6 +365,26 @@ const icons = {
   down: '<svg viewBox="0 0 24 24"><path d="M16.6 8.6 18 10l-6 6-6-6 1.4-1.4 4.6 4.6z"/></svg>',
 };
 
+/** cards whose design fields are open (by card id), and whether they are open on every card */
+const designOpen = new Set<string>();
+let designAll = (() => { try { return localStorage.getItem('cardnovel.designAll') === '1'; } catch { return false; } })();
+
+/** The design choices that differ from the defaults, so a closed card still shows them. */
+function designSummary(card: Card): string[] {
+  const out: string[] = [];
+  const isBody = card.kind === 'body';
+  const layout = layoutOf(card);
+  if (layout !== 'stack') out.push(LAYOUT_NAME[layout]);
+  if (card.textScale && card.textScale !== 1) out.push('글자 ' + (TEXT_SCALES.find((t) => t.value === card.textScale)?.name ?? card.textScale));
+  if (card.textPos && card.textPos !== 'auto') out.push('글 ' + TEXT_POS_NAME[card.textPos]);
+  if (srcOf(card) && card.imgPos && card.imgPos !== 'center') out.push('자르기 ' + (card.imgPos === 'top' ? '위' : '아래'));
+  if (isBody && card.showLabel && card.label.trim()) out.push(`머리말 ‘${card.label.trim()}’`);
+  if (isBody && card.accent) out.push('강조');
+  if (isBody && card.title.trim()) out.push(layout === 'quote' ? `말한 사람 ‘${card.title.trim()}’` : '소제목');
+  if (!isBody && !card.showLabel) out.push('시리즈 줄 숨김');
+  return out;
+}
+
 function cardRowHTML(card: Card, i: number): string {
   const src = srcOf(card);
   const isBody = card.kind === 'body', isCover = card.kind === 'cover', isOutro = card.kind === 'outro';
@@ -342,6 +394,8 @@ function cardRowHTML(card: Card, i: number): string {
   const pos = card.imgPos || 'center';
   const layout = layoutOf(card);
   const layouts: CardLayout[] = isBody ? ['stack', 'full', 'quote'] : isCover ? ['stack', 'full'] : [];
+  const open = designAll || designOpen.has(card.id);
+  const summary = designSummary(card);
   return `
     <div class="num">
       ${isBody ? `<button type="button" data-act="up" aria-label="위로" ${i === 1 ? 'disabled' : ''}>${icons.up}</button>` : ''}
@@ -357,25 +411,33 @@ function cardRowHTML(card: Card, i: number): string {
         ${p === 'canva' && card.canvaDesignId ? `<button class="btn tiny" type="button" data-act="canvaImport" ${busy || !online() ? 'disabled' : ''}>Canva에서 가져오기</button>` : ''}
         <button class="btn tiny" type="button" data-act="upload">올리기</button>
         ${src ? '<button class="btn tiny" type="button" data-act="clear">지움</button>' : ''}
-        ${layouts.length ? `<select class="input pos" data-f="layout" aria-label="카드 배치">${layouts.map((l) => `<option value="${l}" ${l === layout ? 'selected' : ''}>배치 · ${LAYOUT_NAME[l]}</option>`).join('')}</select>` : ''}
-        <select class="input pos" data-f="textScale" aria-label="글자 크기">${TEXT_SCALES.map((t) => `<option value="${t.value}" ${t.value === (card.textScale || 1) ? 'selected' : ''}>글자 · ${t.name}</option>`).join('')}</select>
-        ${!isOutro ? `<select class="input pos" data-f="textPos" aria-label="글 위치">${(Object.keys(TEXT_POS_NAME) as TextPos[]).map((k) => `<option value="${k}" ${k === (card.textPos || 'auto') ? 'selected' : ''}>글 위치 · ${TEXT_POS_NAME[k]}</option>`).join('')}</select>` : ''}
-        ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>자르기 · 위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>자르기 · 가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>자르기 · 아래</option></select>` : ''}
       </div>
     </div>
     <div class="body">
-      <div class="top">
-        ${isCover ? `<input class="input" data-f="title" placeholder="이야기 제목" value="${esc(card.title)}">` : ''}
-        ${isBody ? `<input class="input" data-f="label" placeholder="머리말 (예: 전환 · 비워도 됨)" value="${esc(card.label)}">` : ''}
-        ${isOutro ? `<select class="input" data-f="outroKind" aria-label="덧붙임 종류">${(Object.keys(OUTRO_KINDS) as OutroKind[]).map((k) => `<option value="${k}" ${k === work.outroKind ? 'selected' : ''}>${OUTRO_KINDS[k].name}</option>`).join('')}</select>` : ''}
-        <label class="chk" title="${isBody ? '카드 위에 머리말을 보여 줍니다' : '카드 위에 시리즈 이름을 보여 줍니다'}"><input type="checkbox" data-f="showLabel" ${card.showLabel ? 'checked' : ''}> ${isBody ? '머리말' : '시리즈'}</label>
-        ${isBody ? `<label class="chk" title="제목과 막대를 강조색으로"><input type="checkbox" data-f="accent" ${card.accent ? 'checked' : ''}> 강조</label>` : '<span></span>'}
-        <button class="btn small" type="button" data-act="rewrite" ${!online() || (isOutro && work.outroKind === 'none') ? 'disabled' : ''}>${isCover ? '훅 다시' : '다시 쓰기'}</button>
+      ${isCover ? `<input class="input" data-f="title" placeholder="이야기 제목" aria-label="이야기 제목" value="${esc(card.title)}">` : ''}
+      ${isOutro ? `<select class="input" data-f="outroKind" aria-label="덧붙임 종류">${(Object.keys(OUTRO_KINDS) as OutroKind[]).map((k) => `<option value="${k}" ${k === work.outroKind ? 'selected' : ''}>${OUTRO_KINDS[k].name}</option>`).join('')}</select>` : ''}
+      ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" aria-label="${i + 1}번 카드 글" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문 · *별표*로 감싼 말은 강조색'}">${esc(card.text)}</textarea>`}
+      ${isOutro ? `<div class="fixed">고정: ${esc([work.follow, work.handle].filter(Boolean).join(' · ') || '꾸미기에서 팔로우 문구와 핸들을 넣으세요')}</div>` : ''}
+      <div class="design-box" ${open ? '' : 'hidden'}>
+        <div class="design-grid">
+          ${layouts.length ? `<label><span>배치</span><select class="input pos" data-f="layout">${layouts.map((l) => `<option value="${l}" ${l === layout ? 'selected' : ''}>${LAYOUT_NAME[l]}</option>`).join('')}</select></label>` : ''}
+          <label><span>글자 크기</span><select class="input pos" data-f="textScale">${TEXT_SCALES.map((t) => `<option value="${t.value}" ${t.value === (card.textScale || 1) ? 'selected' : ''}>${t.name}</option>`).join('')}</select></label>
+          ${!isOutro ? `<label><span>글 위치</span><select class="input pos" data-f="textPos">${(Object.keys(TEXT_POS_NAME) as TextPos[]).map((k) => `<option value="${k}" ${k === (card.textPos || 'auto') ? 'selected' : ''}>${TEXT_POS_NAME[k]}</option>`).join('')}</select></label>` : ''}
+          ${src ? `<label><span>그림 자르기</span><select class="input pos" data-f="imgPos"><option value="top" ${pos === 'top' ? 'selected' : ''}>위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>아래</option></select></label>` : ''}
+        </div>
+        <div class="design-line">
+          ${isBody ? `<input class="input" data-f="label" placeholder="머리말 (예: 전환 · 비워도 됨)" aria-label="머리말" value="${esc(card.label)}">` : ''}
+          <label class="chk" title="${isBody ? '카드 위에 머리말을 보여 줍니다' : '카드 위에 시리즈 이름을 보여 줍니다'}"><input type="checkbox" data-f="showLabel" ${card.showLabel ? 'checked' : ''}> ${isBody ? '머리말 보이기' : '시리즈 줄 보이기'}</label>
+          ${isBody ? `<label class="chk" title="제목과 막대를 강조색으로"><input type="checkbox" data-f="accent" ${card.accent ? 'checked' : ''}> 강조 카드</label>` : ''}
+        </div>
+        ${isBody ? `<input class="input" data-f="title" placeholder="${layout === 'quote' ? '말한 사람 (선택, 예: 지수)' : '소제목 (선택)'}" aria-label="${layout === 'quote' ? '말한 사람' : '소제목'}" value="${esc(card.title)}">` : ''}
       </div>
-      ${isBody ? `<input class="input" data-f="title" placeholder="${layout === 'quote' ? '말한 사람 (선택, 예: 지수)' : '소제목 (선택)'}" value="${esc(card.title)}">` : ''}
-      ${isOutro && work.outroKind === 'none' ? '' : `<textarea class="input" data-f="text" placeholder="${isCover ? '표지에 들어갈 한 줄 훅' : isOutro ? '덧붙임 한 줄' : '카드 본문 · *별표*로 감싼 말은 강조색'}">${esc(card.text)}</textarea>`}
-      ${isOutro ? `<div class="fixed">고정: ${esc([work.follow, work.handle].filter(Boolean).join(' · ') || '오른쪽 칸에서 팔로우 문구와 핸들을 넣으세요')}</div>` : ''}
-      <div class="meta"><span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span><span class="count"></span></div>
+      <div class="meta">
+        <span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span>
+        <button class="design-toggle" type="button" data-act="design" aria-expanded="${open}">${open ? '디자인 접기' : '디자인'}${!open && summary.length ? `<span class="sum">${esc(summary.join(' · '))}</span>` : ''}</button>
+        <span class="count"></span>
+        <button class="btn tiny" type="button" data-act="rewrite" ${!online() || (isOutro && work.outroKind === 'none') ? 'disabled' : ''}>${isCover ? '훅 다시' : '다시 쓰기'}</button>
+      </div>
     </div>`;
 }
 
@@ -410,6 +472,7 @@ function buildCardList() {
     const tb = document.createElement('button');
     tb.type = 'button';
     tb.setAttribute('aria-label', `${i + 1}번 카드`);
+    if (card.kind === 'body') { tb.draggable = true; tb.title = `${i + 1}번 · 끌어서 순서 바꾸기`; }
     const tc = document.createElement('canvas');
     tc.width = 112; tc.height = Math.round((112 * H) / W);
     tb.appendChild(tc);
@@ -432,6 +495,57 @@ function select(i: number) {
   current = Math.max(0, Math.min(TOTAL_CARDS - 1, i));
   document.querySelectorAll('.card-row').forEach((r, k) => r.classList.toggle('active', k === current));
   scheduleRender();
+}
+
+/** Shows card i for editing: the 카드 step, the card selected and scrolled to, and with `focus` its words ready to type. */
+function goCard(i: number, focus = false) {
+  setTab('cards', false);
+  select(i);
+  const row = $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${i}"]`);
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (focus) row?.querySelector<HTMLElement>('textarea[data-f="text"], input[data-f="title"]')?.focus({ preventScroll: true });
+}
+
+/** Moves a body card to another body position (dragging thumbnails). */
+function moveCard(from: number, to: number) {
+  if (from === to || from < 1 || to < 1 || from > BODY_COUNT || to > BODY_COUNT) return;
+  pushUndo();
+  const [c] = work.cards.splice(from, 1);
+  work.cards.splice(to, 0, c);
+  current = to;
+  save(); buildCardList(); scheduleRender(); scheduleReview();
+  undoToast(`${from + 1}번 카드를 ${to + 1}번 자리로 옮겼어요.`);
+}
+
+function wireThumbDrag() {
+  const thumbs = $('thumbs');
+  let from = -1;
+  const indexOf = (e: Event) => { const b = (e.target as HTMLElement).closest('button'); return b ? [...thumbs.children].indexOf(b) : -1; };
+  const clear = () => thumbs.querySelectorAll('.drop-before, .drop-after, .dragging').forEach((b) => b.classList.remove('drop-before', 'drop-after', 'dragging'));
+  thumbs.addEventListener('dragstart', (e) => {
+    const i = indexOf(e);
+    if (i < 1 || i > BODY_COUNT) { e.preventDefault(); return; }
+    from = i;
+    e.dataTransfer?.setData('text/plain', String(i));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    thumbs.children[i].classList.add('dragging');
+  });
+  thumbs.addEventListener('dragover', (e) => {
+    const i = indexOf(e);
+    if (from < 0 || i < 1 || i > BODY_COUNT) return;
+    e.preventDefault();
+    clear();
+    thumbs.children[from].classList.add('dragging');
+    if (i !== from) thumbs.children[i].classList.add(i < from ? 'drop-before' : 'drop-after');
+  });
+  thumbs.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const i = indexOf(e);
+    const f = from;
+    from = -1; clear();
+    if (f > 0 && i > 0) moveCard(f, i);
+  });
+  thumbs.addEventListener('dragend', () => { from = -1; clear(); });
 }
 
 function wireCardList() {
@@ -474,6 +588,13 @@ function wireCardList() {
 async function onCardAction(act: string, i: number) {
   const card = work.cards[i];
   select(i);
+  if (act === 'design') {
+    if (designAll) { designAll = false; $<HTMLInputElement>('designAll').checked = false; try { localStorage.setItem('cardnovel.designAll', '0'); } catch { /* fine */ } work.cards.forEach((c) => designOpen.add(c.id)); }
+    if (designOpen.has(card.id)) designOpen.delete(card.id); else designOpen.add(card.id);
+    refreshRow(i);
+    $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${i}"] [data-act="design"]`)?.focus();
+    return;
+  }
   if (act === 'up' || act === 'down') {
     const j = act === 'up' ? i - 1 : i + 1;
     if (j < 1 || j > BODY_COUNT) return;
@@ -705,7 +826,7 @@ async function runCompose() {
     void keepStorage();
     const styleNote = r.usedAI && work.style.preset === 'ai' ? ` 그림체 제안: ${work.style.name}.` : '';
     setStatus(st, `20장 구성을 마쳤어요.${styleNote} 아래에서 다듬고 그림을 그려 보세요.${!ai && r.mode === 'split' ? ' (AI 키가 없어 장면 설명·그림체 제안은 비워 두었어요.)' : ''}`);
-    if (isPhone()) setTab('cards'); else $('cardsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTab('cards');
   } catch (e) {
     undoStack.pop();
     $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
@@ -846,13 +967,17 @@ function renderAllUI() {
   renderReview(app);
   renderProof(app);
   renderFinishBox(app);
+  renderStepStatus();
+  renderPrecheck(app);
   void renderTextAI();
   void renderImageAI();
   scheduleRender();
 }
 
 /* ================= settings ================= */
-function openSettings() {
+type SettingsPane = 'keys' | 'defaults' | 'prices' | 'connect';
+const PANE_NAME: Record<SettingsPane, string> = { keys: 'AI 키', defaults: '새 작품 기본값', prices: '가격 · 품질', connect: '연결' };
+function openSettings(pane: SettingsPane = 'keys') {
   const keyRow = (p: TextProvider, label: string, help: string) => `
     <div class="key-row" data-p="${p}">
       <div class="field">
@@ -865,21 +990,26 @@ function openSettings() {
     </div>`;
   openModal(`
     <div class="panel-head"><h2>설정</h2><button class="btn icon" type="button" data-a="close" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4l-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"/></svg></button></div>
+    <div class="seg set-tabs" id="setTabs" role="tablist">${(Object.keys(PANE_NAME) as SettingsPane[]).map((k) => `<button type="button" role="tab" data-pane="${k}">${PANE_NAME[k]}${k === 'keys' ? `<small>${(['anthropic', 'google', 'openai'] as const).filter((p) => settings.keys[p]).length}/3</small>` : ''}</button>`).join('')}</div>
     <div class="scroll">
+      <div class="set-pane" data-pane="keys">
       <div class="warn">API 키는 이 기기의 브라우저에만 저장되고, 해당 AI 회사로만 보내요. 공용 기기에서는 쓰지 말고, 각 회사 콘솔에서 월 사용 한도를 걸어 두세요.</div>
-      <div class="section-title">AI 키</div>
-      <div class="stack">
+      <div class="stack" style="margin-top:14px">
         ${keyRow('anthropic', 'Anthropic (Claude 글 · Claude SVG 그림)', 'sk-ant-…')}
         ${keyRow('google', 'Google AI Studio (Gemini 글 · Gemini 이미지)', 'AIza…')}
-        ${keyRow('openai', 'OpenAI (GPT 글 · GPT 이미지)', 'sk-…')}
+        ${keyRow('openai', 'OpenAI (GPT 글 · GPT 이미지 · GPT 낭독)', 'sk-…')}
       </div>
-      <div class="section-title">새 작품 기본값</div>
+      </div>
+      <div class="set-pane" data-pane="defaults">
+      <p class="hint" style="margin-bottom:12px">새로 만드는 작품에 처음부터 들어가는 값이에요. 지금 작품은 「꾸미기」에서 바꿔요.</p>
       <div class="row two">
         <div class="field"><label for="setSeries">시리즈 이름</label><input class="input" id="setSeries" value="${esc(settings.series)}"></div>
         <div class="field"><label for="setHandle">작가 핸들</label><input class="input" id="setHandle" value="${esc(settings.handle)}"></div>
       </div>
       <div class="field" style="margin-top:12px"><label for="setFollow">팔로우 문구 (마지막 장)</label><input class="input" id="setFollow" value="${esc(settings.follow)}"></div>
-      <div class="section-title">그림 · 낭독 가격</div>
+      </div>
+      <div class="set-pane" data-pane="prices">
+      <div class="section-title" style="margin-top:0">그림 가격</div>
       <div class="row three">
         <div class="field"><label for="priceGemini">Gemini 장당 $</label><input class="input" id="priceGemini" type="number" step="0.01" min="0" value="${settings.prices.gemini}"></div>
         <div class="field"><label for="priceOpenai">GPT 장당 $</label><input class="input" id="priceOpenai" type="number" step="0.01" min="0" value="${settings.prices.openai}"></div>
@@ -888,12 +1018,15 @@ function openSettings() {
       <div class="field" style="margin-top:12px"><label for="claudeTier">Claude SVG 품질</label>
         <select class="input" id="claudeTier"><option value="quick" ${settings.claudeArtTier === 'quick' ? 'selected' : ''}>빠름 (장당 몇 초)</option><option value="detailed" ${settings.claudeArtTier === 'detailed' ? 'selected' : ''}>정밀 (장당 30초 안팎)</option></select>
       </div>
-      <div class="row two" style="margin-top:12px">
+      <div class="section-title">낭독 가격</div>
+      <div class="row two">
         <div class="field"><label for="ttsOpenai">GPT 낭독 1,000자당 $</label><input class="input" id="ttsOpenai" type="number" step="0.005" min="0" value="${settings.ttsPrices.openai}"></div>
         <div class="field"><label for="ttsGoogle">Gemini 낭독 1,000자당 $</label><input class="input" id="ttsGoogle" type="number" step="0.005" min="0" value="${settings.ttsPrices.google}"></div>
       </div>
-      <p class="hint" style="margin-top:16px">가격은 자주 바뀌어요. 각 회사 가격표를 보고 맞춰 두면 그림 그리기 전에 예상 비용을 보여 줘요.</p>
-      <div class="section-title">공유 링크</div>
+      <p class="hint" style="margin-top:16px">가격은 자주 바뀌어요. 각 회사 가격표를 보고 맞춰 두면 그림 그리기·낭독 전에 예상 비용을 보여 주고, 사용량에도 이 값으로 계산해요.</p>
+      </div>
+      <div class="set-pane" data-pane="connect">
+      <div class="section-title" style="margin-top:0">공유 링크</div>
       <div class="key-row" id="shareKeyRow">
         <div class="field"><label for="shareKey">공유 열쇠 (서버의 SHARE_KEY)</label><input class="input" id="shareKey" type="password" autocomplete="off" spellcheck="false" placeholder="${settings.shareKey ? maskKey(settings.shareKey) + ' 저장됨' : 'cn-…'}"></div>
         <button class="btn primary" type="button" data-a="shareSave">확인·저장</button>
@@ -903,12 +1036,19 @@ function openSettings() {
       <div class="section-title">구글 드라이브 백업</div>
       <div class="field"><label for="googleClientId">Google OAuth 클라이언트 ID</label><input class="input" id="googleClientId" spellcheck="false" autocomplete="off" placeholder="${esc(DEFAULT_GOOGLE_CLIENT_ID || '…apps.googleusercontent.com')}" value="${esc(settings.googleClientId)}"></div>
       <p class="hint" style="margin-top:6px">Google Cloud 콘솔에서 만든 ‘웹 애플리케이션’ 클라이언트 ID예요. 승인된 자바스크립트 원본에 ${esc(location.origin)} 을 넣어야 해요.</p>
+      </div>
     </div>
     <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)}</span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
   {
     size: 'mid',
     wire: (box, close) => {
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
+      const show = (p: SettingsPane) => {
+        box.querySelectorAll<HTMLButtonElement>('#setTabs button').forEach((b) => { const on = b.dataset.pane === p; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+        box.querySelectorAll<HTMLElement>('.set-pane').forEach((el) => { el.hidden = el.dataset.pane !== p; });
+      };
+      box.querySelectorAll<HTMLButtonElement>('#setTabs button').forEach((b) => b.addEventListener('click', () => show(b.dataset.pane as SettingsPane)));
+      show(pane);
       box.querySelectorAll<HTMLElement>('.key-row[data-p]').forEach((row) => {
         const p = row.dataset.p as TextProvider;
         const input = row.querySelector<HTMLInputElement>('input')!;
@@ -985,17 +1125,20 @@ function openSettings() {
 /* ================= library ================= */
 async function openLibrary() {
   await persist(true);
-  const all = await works.all();
-  const groups = groupBySeries(all);
+  let all = await works.all();
+  for (const id of await purgeTrash().catch(() => [] as string[])) void deleteAllVersions(id).catch(() => undefined);
+  const pref = (() => { try { return JSON.parse(localStorage.getItem('cardnovel.lib') || '{}') as { sort?: LibSort; group?: boolean }; } catch { return {}; } })();
+  let query = '', sort: LibSort = pref.sort && pref.sort in LIB_SORT_NAME ? pref.sort : 'recent', grouped = pref.group !== false, showTrash = false;
+  const remember = () => { try { localStorage.setItem('cardnovel.lib', JSON.stringify({ sort, group: grouped })); } catch { /* fine */ } };
   const item = (w: Work) => `
     <div class="work ${w.id === work.id ? 'current' : ''}" data-id="${esc(w.id)}">
       ${w.thumb ? `<img alt="" src="${w.thumb}">` : '<div class="noimg">그림 없음</div>'}
-      <div><b>${w.episode ? `<span class="ep">${w.episode}화</span>` : ''}${esc(w.name || workTitle(w))}</b><span>${fmtDate(w.updatedAt)} · ${w.cards.filter((c) => c.text.trim()).length}/20장 글 · ${w.cards.filter((c) => c.img || c.svg).length}장 그림</span></div>
+      <div><b>${w.episode ? `<span class="ep">${w.episode}화</span>` : ''}${esc(w.name || workTitle(w))}</b><span>${fmtDate(w.updatedAt)} · ${w.cards.filter((c) => c.text.trim()).length}/20장 글 · ${w.cards.filter((c) => c.img || c.svg).length}장 그림${w.posts?.length ? ` · 게시 ${w.posts.length}번` : ''}</span></div>
       <div class="acts">
         ${w.id === work.id ? '<span class="hint">지금 작업</span>' : '<button class="btn small" type="button" data-a="open">열기</button>'}
         <button class="btn small" type="button" data-a="copy">사본</button>
         <button class="btn small" type="button" data-a="export">내보내기</button>
-        <button class="btn small" type="button" data-a="del" ${w.id === work.id ? 'disabled' : ''}>삭제</button>
+        <button class="btn small" type="button" data-a="del" ${w.id === work.id ? 'disabled title="지금 작업 중인 작품은 다른 작품을 연 뒤 지울 수 있어요"' : ''}>삭제</button>
       </div>
     </div>`;
   const group = (g: { name: string; works: Work[] }) => `
@@ -1006,6 +1149,26 @@ async function openLibrary() {
       </div>
       ${g.works.map(item).join('')}
     </section>`;
+  const listHTML = (): string => {
+    if (!all.length) return '<div class="empty-note">아직 저장된 작품이 없어요.</div>';
+    const found = filterWorks(all, query, sort);
+    if (!found.length) return `<div class="empty-note">‘${esc(query)}’에 맞는 작품이 없어요.</div>`;
+    if (query.trim() || !grouped) return `${query.trim() ? `<p class="hint lib-count">${found.length}편 찾았어요</p>` : ''}${found.map(item).join('')}`;
+    const groups = groupBySeries(found);
+    const key = (g: { name: string; works: Work[] }) => sort === 'created' ? -Math.max(...g.works.map((w) => w.createdAt || 0)) : sort === 'recent' ? -Math.max(...g.works.map((w) => w.updatedAt || 0)) : 0;
+    if (sort === 'title' || sort === 'episode') groups.sort((a, b) => (a.name ? 0 : 1) - (b.name ? 0 : 1) || a.name.localeCompare(b.name, 'ko'));
+    else groups.sort((a, b) => (a.name ? 0 : 1) - (b.name ? 0 : 1) || key(a) - key(b));
+    return groups.map(group).join('');
+  };
+  const trashHTML = async (): Promise<string> => {
+    const list = await listTrash();
+    return `<div class="trash-head"><button class="btn small" type="button" data-a="back">← 보관함으로</button><span class="hint">지운 작품은 ${TRASH_DAYS}일 동안 여기 있어요.</span>${list.length ? '<button class="btn small" type="button" data-a="emptyTrash">휴지통 비우기</button>' : ''}</div>
+      ${list.length ? list.map((e) => `<div class="work trashed" data-tid="${esc(e.id)}">
+        ${e.thumb ? `<img alt="" src="${e.thumb}">` : '<div class="noimg">그림 없음</div>'}
+        <div><b>${e.episode ? `<span class="ep">${e.episode}화</span>` : ''}${esc(e.title)}</b><span>${fmtDate(e.deletedAt)}에 지움 · ${daysLeft(e)}일 뒤 완전히 지워져요</span></div>
+        <div class="acts"><button class="btn small tonal" type="button" data-a="restore">되살리기</button><button class="btn small" type="button" data-a="purge">영구 삭제</button></div>
+      </div>`).join('') : '<div class="empty-note">휴지통이 비어 있어요.</div>'}`;
+  };
   openModal(`
     <div class="panel-head"><h2>작품 보관함</h2>
       <div class="toolbar">
@@ -1016,10 +1179,25 @@ async function openLibrary() {
     </div>
     <div class="drive-box" id="driveBox"></div>
     <p class="hint" style="margin:0 0 12px">작업은 바뀔 때마다 이 기기에 자동 저장돼요. 같은 시리즈 이름끼리 묶이고, 「다음 회 만들기」는 그림체·인물 기준 그림·테마를 그대로 가져가요. <span id="storageNote"></span></p>
-    <div class="lib">${all.length ? groups.map(group).join('') : '<div class="empty-note">아직 저장된 작품이 없어요.</div>'}</div>`,
+    <div class="lib-tools">
+      <input class="input" id="libSearch" type="search" placeholder="제목·시리즈·카드 글로 찾기 (ㅁㅊ처럼 초성도 돼요)" aria-label="작품 찾기" autocomplete="off">
+      <select class="input" id="libSort" aria-label="정렬">${(Object.keys(LIB_SORT_NAME) as LibSort[]).map((k) => `<option value="${k}" ${k === sort ? 'selected' : ''}>${LIB_SORT_NAME[k]}</option>`).join('')}</select>
+      <label class="chk"><input type="checkbox" id="libGroup" ${grouped ? 'checked' : ''}> 시리즈로 묶기</label>
+      <button class="btn small" type="button" data-a="trash">휴지통<span id="trashCount"></span></button>
+    </div>
+    <div class="lib" id="libList">${listHTML()}</div>`,
   {
     size: 'wide',
     wire: (box, close) => {
+      const list = box.querySelector<HTMLElement>('#libList')!;
+      const tools = box.querySelector<HTMLElement>('.lib-tools')!;
+      const paint = async () => {
+        tools.classList.toggle('dim', showTrash);
+        list.innerHTML = showTrash ? await trashHTML() : listHTML();
+        const n = (await listTrash()).length;
+        box.querySelector('#trashCount')!.textContent = n ? ` ${n}` : '';
+      };
+      void paint();
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
       void renderDriveBox(box.querySelector<HTMLElement>('#driveBox')!, app, driveDeps, close);
       void (async () => {
@@ -1030,48 +1208,129 @@ async function openLibrary() {
           if (el && est?.usage !== undefined) el.textContent = `이 기기에 ${(est.usage / 1048576).toFixed(0)}MB 사용 중${kept ? ' · 브라우저가 지우지 않게 보관 중' : ' · 저장 공간이 모자라면 브라우저가 지울 수 있으니 드라이브 백업이나 내보내기를 해 두세요'}.`;
         } catch { /* not supported */ }
       })();
-      box.querySelector('[data-a="new"]')!.addEventListener('click', async () => {
-        await persist(true);
-        await keepVersion('leave');
-        work = newWork(defaults());
-        lastTimedVersion = Date.now();
-        current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
-        save(); renderAllUI(); close();
-        toast('새 작품을 시작했어요.');
-      });
+      const search = box.querySelector<HTMLInputElement>('#libSearch')!;
+      search.addEventListener('input', () => { query = search.value; showTrash = false; void paint(); });
+      box.querySelector<HTMLSelectElement>('#libSort')!.addEventListener('change', (e) => { sort = (e.target as HTMLSelectElement).value as LibSort; remember(); void paint(); });
+      box.querySelector<HTMLInputElement>('#libGroup')!.addEventListener('change', (e) => { grouped = (e.target as HTMLInputElement).checked; remember(); void paint(); });
+      box.querySelector('[data-a="trash"]')!.addEventListener('click', () => { showTrash = !showTrash; void paint(); });
+      box.querySelector('[data-a="new"]')!.addEventListener('click', async () => { close(); await startNewWork(); });
       box.querySelector('[data-a="import"]')!.addEventListener('click', () => { const f = $<HTMLInputElement>('libFile'); f.value = ''; f.click(); close(); });
-      box.querySelectorAll<HTMLButtonElement>('[data-a="next"]').forEach((b) => b.addEventListener('click', () => { close(); void startNextEpisode(b.dataset.id!); }));
-      box.querySelectorAll<HTMLElement>('.work').forEach((el) => {
-        const id = el.dataset.id!;
-        el.querySelector('[data-a="open"]')?.addEventListener('click', async () => {
+      list.addEventListener('click', async (e) => {
+        const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-a]');
+        if (!b) return;
+        const a = b.dataset.a!;
+        if (a === 'back') { showTrash = false; void paint(); return; }
+        if (a === 'emptyTrash') {
+          for (const id of await purgeTrash(Date.now(), true)) void deleteAllVersions(id).catch(() => undefined);
+          void paint(); toast('휴지통을 비웠어요.'); return;
+        }
+        if (a === 'next') { close(); void startNextEpisode(b.dataset.id!); return; }
+        const tid = b.closest<HTMLElement>('[data-tid]')?.dataset.tid;
+        if (tid) {
+          if (a === 'restore') {
+            const w = await takeFromTrash(tid);
+            if (w) { await works.put(w); all = await works.all(); toast(`「${w.name || workTitle(w)}」을(를) 되살렸어요.`); }
+          } else if (a === 'purge') {
+            if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = '정말 지울까요?'; b.classList.add('danger'); return; }
+            await dropFromTrash(tid);
+            void deleteAllVersions(tid).catch(() => undefined);
+          }
+          void paint(); return;
+        }
+        const id = b.closest<HTMLElement>('.work')?.dataset.id;
+        if (!id) return;
+        if (a === 'open') {
           await persist(true);
           const w = await works.get(id);
           if (!w) return;
           await openWork(w);
           close();
-        });
-        el.querySelector('[data-a="copy"]')!.addEventListener('click', async () => {
+        } else if (a === 'copy') {
           const w = id === work.id ? work : await works.get(id);
           if (!w) return;
           const copy: Work = { ...JSON.parse(JSON.stringify(w)), id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: `${w.name || workTitle(w)} · 사본 ${fmtDate(Date.now())}`, createdAt: Date.now(), updatedAt: Date.now() };
           await works.put(copy);
-          close(); void openLibrary();
-        });
-        el.querySelector('[data-a="export"]')!.addEventListener('click', async () => {
+          all = await works.all(); void paint();
+          toast('사본을 만들었어요.');
+        } else if (a === 'export') {
           const w = id === work.id ? work : await works.get(id);
           if (!w) return;
           download(new Blob([JSON.stringify({ app: 'cardnovel', version: 1, work: w })], { type: 'application/json' }), `${fileBase(w)}.cardnovel.json`);
-        });
-        el.querySelector('[data-a="del"]')!.addEventListener('click', async () => {
-          close();
-          if (!(await confirmBox('이 작품을 지울까요? 되돌릴 수 없어요.', { ok: '지우기' }))) { void openLibrary(); return; }
+        } else if (a === 'del') {
+          if (id === work.id) return;
+          const w = await works.get(id);
+          if (!w) return;
+          await moveToTrash(w);
           await works.del(id);
-          void deleteAllVersions(id).catch(() => undefined);
-          void openLibrary();
-        });
+          all = all.filter((x) => x.id !== id);
+          void paint();
+          toast(`「${w.name || workTitle(w)}」을(를) 휴지통으로 옮겼어요.`, 6500, { label: '되살리기', run: async () => {
+            const back = await takeFromTrash(id);
+            if (!back) return;
+            await works.put(back);
+            all = await works.all();
+            if (box.isConnected) void paint();
+            toast('되살렸어요.');
+          } });
+        }
       });
     },
   });
+}
+
+async function startNewWork() {
+  await persist(true);
+  await keepVersion('leave');
+  work = newWork(defaults());
+  lastTimedVersion = Date.now();
+  current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+  save(); renderAllUI(); setTab('story');
+  toast('새 작품을 시작했어요.');
+}
+
+/* ================= quick run (Ctrl/⌘+K) ================= */
+function paletteCommands(): Command[] {
+  const click = (id: string, tab?: Tab) => () => { if (tab) setTab(tab); document.getElementById(id)?.click(); };
+  const cmds: Command[] = [
+    { id: 'step:story', group: '단계', title: '이야기로 가기', keywords: '원고 줄거리 입력 1', run: () => setTab('story') },
+    { id: 'step:cards', group: '단계', title: '카드 편집으로 가기', keywords: '카드 2', run: () => setTab('cards') },
+    { id: 'step:review', group: '단계', title: '다듬기로 가기 (평가 · 교정)', keywords: '다듬기 평가 교정 3', run: () => setTab('review') },
+    { id: 'step:look', group: '단계', title: '꾸미기로 가기', keywords: '테마 비율 서체 워터마크', run: () => setTab('look') },
+    { id: 'step:export', group: '단계', title: '내보내기로 가기', keywords: '저장 공유 올리기', run: () => setTab('export') },
+    { id: 'compose', group: '만들기', title: '카드로 만들기', keywords: '구성 생성', run: click('btnCompose', 'story') },
+    { id: 'artAll', group: '만들기', title: '모든 그림 그리기', keywords: '그림 이미지', run: click('btnArtAll', 'cards') },
+    { id: 'review', group: '다듬기', title: 'AI 평가 받기', keywords: '점수 리뷰', run: click('btnReview', 'review') },
+    { id: 'proof', group: '다듬기', title: '일괄 교정하기', keywords: '맞춤법 띄어쓰기 문장부호 교정', run: click('btnProof', 'review') },
+    { id: 'undo', group: '다듬기', title: '되돌리기', hint: 'Ctrl+Z', run: () => undo() },
+    { id: 'versions', group: '다듬기', title: '버전 기록', keywords: '히스토리 복원', run: click('btnVersions') },
+    { id: 'designAll', group: '다듬기', title: designAll ? '디자인 칸 모두 접기' : '디자인 칸 모두 펼치기', keywords: '배치 글자 크기 위치', run: () => { setTab('cards'); click('designAll')(); } },
+    { id: 'check', group: '올리기', title: '게시 전 점검', keywords: '확인 체크', run: () => { setTab('export'); const d = document.querySelector<HTMLDetailsElement>('#precheckBox details'); if (d) d.open = true; } },
+    { id: 'caption', group: '올리기', title: '캡션 · 해시태그', keywords: '게시글 태그', run: () => openCaptionHelper() },
+    { id: 'copyCaption', group: '올리기', title: '캡션 복사', run: () => void copyCaption() },
+    { id: 'zip', group: '올리기', title: '전체 ZIP 저장', keywords: '다운로드 20장', run: () => void saveAll() },
+    { id: 'saveOne', group: '올리기', title: '이 카드만 저장', run: () => void saveOne() },
+    { id: 'share', group: '올리기', title: '인스타로 공유 (20장)', run: () => void share() },
+    { id: 'insta', group: '올리기', title: '인스타 미리보기', run: click('btnInsta') },
+    { id: 'reels', group: '올리기', title: '릴스 영상 만들기', keywords: '영상 동영상 낭독', run: click('btnReels') },
+    { id: 'shareLink', group: '올리기', title: '공유 링크 만들기', run: click('btnShareLink') },
+    { id: 'posts', group: '올리기', title: '게시 기록 · 성과', keywords: '좋아요 저장 참여율 통계', run: click('btnPosts') },
+    { id: 'library', group: '작품', title: '보관함 열기', keywords: '작품 목록 휴지통', run: () => void openLibrary() },
+    { id: 'new', group: '작품', title: '새 작품 시작', run: () => void startNewWork() },
+    { id: 'next', group: '작품', title: '이 시리즈 다음 회 만들기', run: click('btnNextEpisode') },
+    { id: 'bible', group: '작품', title: '설정집', keywords: '인물 장소 시리즈', run: click('btnBible') },
+    { id: 'settings', group: '설정', title: '설정: AI 키', keywords: 'api key', run: () => openSettings('keys') },
+    { id: 'settings:defaults', group: '설정', title: '설정: 새 작품 기본값', keywords: '핸들 팔로우', run: () => openSettings('defaults') },
+    { id: 'settings:prices', group: '설정', title: '설정: 가격 · 품질', run: () => openSettings('prices') },
+    { id: 'settings:connect', group: '설정', title: '설정: 연결 (공유 링크 · 드라이브)', keywords: '구글 드라이브', run: () => openSettings('connect') },
+    { id: 'usage', group: '설정', title: '사용량 · 비용', keywords: '돈 요금', run: click('btnUsage') },
+  ];
+  for (const k of Object.keys(THEMES) as ThemeKey[]) cmds.push({ id: 'theme:' + k, group: '꾸미기', title: `테마: ${THEMES[k].name}`, run: () => { setTab('look'); document.querySelector<HTMLElement>(`#themes [data-k="${k}"]`)?.click(); } });
+  for (const r of ['1:1', '4:5', '3:4', '9:16']) cmds.push({ id: 'ratio:' + r, group: '꾸미기', title: `비율: ${r}`, run: () => { setTab('look'); document.querySelector<HTMLElement>(`#ratioSeg [data-v="${r}"]`)?.click(); } });
+  work.cards.forEach((c, i) => {
+    const words = stripMarks(c.kind === 'cover' ? `${c.title} — ${c.text}` : c.text).replace(/\s+/g, ' ').trim();
+    cmds.push({ id: `card:${i}`, group: '카드', title: `${String(i + 1).padStart(2, '0')}${c.kind === 'cover' ? ' 표지' : c.kind === 'outro' ? ' 마지막 장' : ''} ${words.slice(0, 40) || '(비어 있음)'}`, keywords: `${i + 1}번 카드`, run: () => goCard(i, true) });
+  });
+  return cmds;
 }
 
 async function openWork(w: Work, leaveVersion = true) {
@@ -1106,6 +1365,8 @@ async function importFile(file: File) {
 /* ================= export ================= */
 const exportFmt = (): ImgFormat => ($<HTMLSelectElement>('exportFmt').value === 'jpg' ? 'jpg' : 'png');
 
+function openCaptionHelper() { openCaption(app); }
+
 async function copyCaption(silent = false) {
   try {
     await navigator.clipboard.writeText(captionText(work));
@@ -1118,6 +1379,7 @@ async function copyCaption(silent = false) {
 }
 
 async function saveAll() {
+  if (!(await okToPost(app, '저장'))) return;
   const btn = $<HTMLButtonElement>('btnSaveAll');
   btn.disabled = true;
   try {
@@ -1132,6 +1394,7 @@ async function saveOne() {
 }
 
 async function share() {
+  if (!(await okToPost(app, '공유'))) return;
   const btn = $<HTMLButtonElement>('btnShare');
   btn.disabled = true;
   try {
@@ -1147,7 +1410,7 @@ async function share() {
 function wire() {
   $('btnLibrary').addEventListener('click', () => void openLibrary());
   $('btnUsage').addEventListener('click', () => void openUsage(app));
-  $('btnSettings').addEventListener('click', openSettings);
+  $('btnSettings').addEventListener('click', () => openSettings());
   $('btnCaption').addEventListener('click', () => void copyCaption());
   $('btnSaveAll').addEventListener('click', () => void saveAll());
   $('btnSaveOne').addEventListener('click', () => void saveOne());
@@ -1174,6 +1437,11 @@ function wire() {
       // the browser's "save page" would save the app itself: save the work instead
       e.preventDefault();
       void app.flush().then(() => toast('저장했어요.'));
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (!document.getElementById('palInput')) openPalette(paletteCommands);
       return;
     }
     if (dialog) return;
@@ -1307,7 +1575,21 @@ function wire() {
   window.addEventListener('offline', net);
 
   wireSplitter();
-  wireMobile(app, () => work.cards.some((c) => c.kind === 'body' && c.text.trim()));
+  wireMobile(app);
+  wireSteps();
+  restoreTabs(work.cards.some((c) => c.kind === 'body' && c.text.trim()));
+  onTabChange((t) => { if (t === 'export') renderPrecheck(app); if (t === 'cards') paintMini(); });
+  wireThumbDrag();
+  stage().addEventListener('click', () => goCard(current, true));
+  const da = $<HTMLInputElement>('designAll');
+  da.checked = designAll;
+  da.addEventListener('change', () => {
+    designAll = da.checked; designOpen.clear();
+    try { localStorage.setItem('cardnovel.designAll', designAll ? '1' : '0'); } catch { /* fine */ }
+    work.cards.forEach((_, i) => refreshRow(i));
+  });
+  $('btnCaptionHelp').addEventListener('click', () => openCaptionHelper());
+  $('btnPalette').addEventListener('click', () => openPalette(paletteCommands));
 }
 
 function wireSplitter() {

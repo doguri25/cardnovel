@@ -6,7 +6,7 @@ import { kv } from './store';
 export interface UsageRecord extends UsageEvent { t: number; workId: string; cost: number }
 
 export const TAG_NAME: Record<UsageTag, string> = {
-  compose: '카드 구성', rewrite: '다시 쓰기', outro: '마지막 장 한 줄', summary: '줄거리 요약', review: 'AI 평가', proof: '일괄 교정', insight: '성과 분석', bible: '설정집',
+  compose: '카드 구성', rewrite: '다시 쓰기', outro: '마지막 장 한 줄', summary: '줄거리 요약', review: 'AI 평가', proof: '일괄 교정', insight: '성과 분석', caption: '캡션·해시태그', bible: '설정집',
   svg: 'Claude SVG 그림', image: '그림', refsheet: '인물 기준 그림', cover: '표지 후보', tts: 'AI 낭독', other: '기타',
 };
 export const PROVIDER_NAME: Record<UsageEvent['provider'], string> = { anthropic: 'Claude', google: 'Gemini', openai: 'GPT' };

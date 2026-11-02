@@ -164,9 +164,12 @@ export interface PostRecord {
   note: string;
   /** when the numbers were last updated */
   updatedAt: number;
+  /** the hashtags the work had when the post was logged, to see which ones do well */
+  tags?: string[];
 }
-export const newPost = (at = Date.now()): PostRecord => ({
+export const newPost = (at = Date.now(), tags: string[] = []): PostRecord => ({
   id: newId(), at, kind: 'feed', url: '', reach: null, likes: null, comments: null, saves: null, shares: null, follows: null, note: '', updatedAt: at,
+  ...(tags.length ? { tags: [...tags] } : {}),
 });
 
 export const OUTRO_KINDS: Record<OutroKind, { name: string; ask: string }> = {
