@@ -29,6 +29,8 @@ export interface Card {
   img?: string;
   imgSource?: ImgSource;
   imgPos?: ImgPos;
+  /** the Canva design this card's picture was made in, to export it again */
+  canvaDesignId?: string;
 }
 
 export interface ArtStyle {

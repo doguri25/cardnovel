@@ -12,6 +12,7 @@ import { kv, works } from './store';
 import { FONT_CHOICES, THEMES, ratioOf, type RatioKey, type ThemeKey } from './themes';
 import { captionText, cardFileName, download, fileBase, renderAll as renderAllFiles, renderToBlob, shareCards, zipAll, type ImgFormat } from './export';
 import { $, confirmBox, esc, fmtDate, fmtTime, openModal, promptBox, setStatus, toast } from './ui/dom';
+import { CANVA_MESSAGES, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, readLanding } from './canva';
 
 /* ================= state ================= */
 let settings: Settings = DEFAULT_SETTINGS;
@@ -160,10 +161,8 @@ async function renderImageAI() {
   const sel = $<HTMLSelectElement>('imageModel');
   sel.hidden = p === 'canva' || p === 'upload';
   $<HTMLButtonElement>('btnArtAll').disabled = p === 'canva' || p === 'upload' || !online();
-  if (sel.hidden) {
-    setStatus($('artStatus'), p === 'canva' ? 'Canva 연결은 다음 단계에서 들어가요. 지금은 「올리기」로 Canva에서 만든 그림을 넣을 수 있어요.' : '카드마다 「올리기」로 그림을 넣으세요.');
-    return;
-  }
+  if (p === 'canva') { void renderCanvaStatus(); return; }
+  if (sel.hidden) { setStatus($('artStatus'), '카드마다 「올리기」로 그림을 넣으세요.'); return; }
   const textP: TextProvider = p === 'gemini' ? 'google' : p === 'openai' ? 'openai' : 'anthropic';
   if (!keyFor(settings, textP)) { fillSelect(sel, [], '', `${PROVIDER_NAME[textP]} 키 필요`); setStatus($('artStatus'), `${IMG_NAME[p]}로 그리려면 설정에서 ${PROVIDER_NAME[textP]} 키를 넣어 주세요.`); return; }
   const lists = await loadModels(textP);
@@ -231,6 +230,8 @@ function cardRowHTML(card: Card, i: number): string {
       <div class="pic ${src ? '' : 'empty'} ${busy ? 'busy' : ''}">${src ? `<img alt="" src="${src}">` : isOutro ? '그림 없어도 됨' : '그림 없음'}${src && card.imgSource ? `<span class="src">${esc(IMG_NAME[card.imgSource])}</span>` : ''}</div>
       <div class="picbtns">
         ${canAI ? `<button class="btn tiny tonal" type="button" data-act="ai" ${busy || !online() ? 'disabled' : ''}>${src ? '다시' : 'AI 그림'}</button>` : ''}
+        ${p === 'canva' ? `<button class="btn tiny tonal" type="button" data-act="canva" ${busy || !online() ? 'disabled' : ''}>${src ? 'Canva에서 고치기' : 'Canva에서 그리기'}</button>` : ''}
+        ${p === 'canva' && card.canvaDesignId ? `<button class="btn tiny" type="button" data-act="canvaImport" ${busy || !online() ? 'disabled' : ''}>Canva에서 가져오기</button>` : ''}
         <button class="btn tiny" type="button" data-act="upload">올리기</button>
         ${src ? '<button class="btn tiny" type="button" data-act="clear">지움</button>' : ''}
         ${src ? `<select class="input pos" data-f="imgPos" aria-label="자르기 위치"><option value="top" ${pos === 'top' ? 'selected' : ''}>위</option><option value="center" ${pos === 'center' ? 'selected' : ''}>가운데</option><option value="bottom" ${pos === 'bottom' ? 'selected' : ''}>아래</option></select>` : ''}
@@ -351,6 +352,10 @@ async function onCardAction(act: string, i: number) {
     const fi = $<HTMLInputElement>('fileInput');
     fi.value = '';
     fi.click();
+  } else if (act === 'canva') {
+    await openInCanva(i);
+  } else if (act === 'canvaImport') {
+    if (card.canvaDesignId) await importFromCanva(i, card.canvaDesignId);
   } else if (act === 'ai') {
     await drawOne(i);
   } else if (act === 'rewrite') {
@@ -968,6 +973,138 @@ function wireSplitter() {
   sp.addEventListener('dblclick', () => { document.documentElement.style.setProperty('--right-w', '440px'); void kv.set('rightw', 0); });
 }
 
+/* ================= Canva ================= */
+const channel: BroadcastChannel | null = 'BroadcastChannel' in window ? new BroadcastChannel('cardnovel') : null;
+interface CanvaImageMsg { type: 'canva-image'; workId: string; cardId: string; img: string }
+const broadcast = (m: CanvaImageMsg) => { try { channel?.postMessage(m); } catch { /* another tab is optional */ } };
+
+async function renderCanvaStatus() {
+  const st = $('artStatus');
+  setStatus(st, 'Canva 연결을 확인하는 중…', 'busy');
+  const connected = await canvaStatus();
+  if (work.imageAI.provider !== 'canva') return;
+  st.className = 'status';
+  if (connected === null) { st.textContent = CANVA_MESSAGES.unavailable; return; }
+  if (connected) {
+    st.innerHTML = 'Canva에 연결됐어요. 카드마다 「Canva에서 그리기」를 누르세요. <button class="btn tiny" type="button" id="btnCanvaLogout">연결 끊기</button>';
+    $('btnCanvaLogout').addEventListener('click', async () => { await canvaLogout().catch(() => undefined); void renderCanvaStatus(); });
+  } else {
+    st.innerHTML = 'Canva로 그리려면 먼저 연결해 주세요. <button class="btn tiny primary" type="button" id="btnCanvaLogin">Canva 연결하기</button>';
+    $('btnCanvaLogin').addEventListener('click', () => void goCanvaLogin());
+  }
+}
+
+/** Saves first: the sign-in leaves the app page and comes back to it. */
+async function goCanvaLogin() {
+  clearTimeout(persistTimer);
+  dirty = true;
+  await persist(true);
+  canvaLogin();
+}
+
+async function openInCanva(i: number) {
+  const card = work.cards[i];
+  // open the tab now, while the click still counts, so the browser does not block it as a pop-up
+  const tab = window.open('', '_blank');
+  try { tab?.document.write('<p style="font:16px sans-serif;padding:24px">Canva 디자인을 준비하는 중…</p>'); } catch { /* cosmetic */ }
+  const st = $('artStatus');
+  artBusy.add(card.id);
+  refreshRow(i);
+  setStatus(st, `${i + 1}번 카드를 Canva로 보내는 중…`, 'busy');
+  try {
+    const w = W;
+    const h = card.kind === 'outro' ? Math.round(cardHeight(work) * 0.42) : ratioOf(work.ratio).art;
+    const src = srcOf(card);
+    const image = src ? await pictureForCanva(src, w, h, card.imgPos) : undefined;
+    const r = await createDesign({ width: w, height: h, title: `${workTitle(work)} ${String(i + 1).padStart(2, '0')}`, image, state: canvaState(work.id, card.id) });
+    card.canvaDesignId = r.designId;
+    save();
+    if (tab && !tab.closed) tab.location.href = r.editUrl; else window.open(r.editUrl, '_blank');
+    setStatus(st, `${i + 1}번 카드가 Canva 새 탭에서 열렸어요. 다 그리면 Canva 왼쪽 위의 돌아가기(Return) 버튼을 누르세요.`);
+  } catch (e) {
+    tab?.close();
+    if (e instanceof CanvaError && e.code === 'not_connected') {
+      setStatus(st, 'Canva 연결이 필요해요. 연결 화면으로 이동해요…');
+      await goCanvaLogin();
+      return;
+    }
+    setStatus(st, canvaMessage(e), 'error');
+  } finally {
+    artBusy.delete(card.id);
+    refreshRow(i);
+  }
+}
+
+async function importFromCanva(i: number, designId: string) {
+  const card = work.cards[i];
+  const st = $('artStatus');
+  artBusy.add(card.id);
+  refreshRow(i);
+  setStatus(st, `${i + 1}번 카드 그림을 Canva에서 가져오는 중…`, 'busy');
+  try {
+    const url = await exportDesign(designId);
+    delete card.svg;
+    card.img = await shrinkImage(url);
+    card.imgSource = 'canva';
+    card.imgPos = 'center';
+    card.canvaDesignId = designId;
+    save();
+    broadcast({ type: 'canva-image', workId: work.id, cardId: card.id, img: card.img });
+    setStatus(st, `${i + 1}번 카드에 Canva 그림을 넣었어요.`);
+    toast(`${i + 1}번 카드에 Canva 그림을 넣었어요.`);
+  } catch (e) {
+    if (e instanceof CanvaError && e.code === 'not_connected') { setStatus(st, 'Canva 연결이 필요해요. 연결 화면으로 이동해요…'); await goCanvaLogin(); return; }
+    setStatus(st, canvaMessage(e), 'error');
+  } finally {
+    artBusy.delete(card.id);
+    refreshRow(i);
+    scheduleRender();
+  }
+}
+
+/** Another tab (the one Canva returned to) put a picture into a card of this work. */
+channel?.addEventListener('message', (e: MessageEvent<CanvaImageMsg>) => {
+  const m = e.data;
+  if (m?.type !== 'canva-image' || m.workId !== work.id) return;
+  const i = work.cards.findIndex((c) => c.id === m.cardId);
+  if (i < 0) return;
+  const c = work.cards[i];
+  delete c.svg;
+  c.img = m.img;
+  c.imgSource = 'canva';
+  c.imgPos = 'center';
+  save(); refreshRow(i); scheduleRender();
+  toast(`${i + 1}번 카드에 Canva 그림이 들어왔어요.`);
+});
+
+/** Landing back from Canva: after sign-in (?canva=connected), or from the editor's Return button (?canva=return). */
+async function handleCanvaLanding() {
+  const url = new URL(location.href);
+  const l = readLanding(url);
+  if (!l) return;
+  history.replaceState(null, '', url.pathname);
+  if (l.kind === 'connected') {
+    if (work.imageAI.provider !== 'canva') { work.imageAI = { provider: 'canva', model: '' }; save(); void renderImageAI(); buildCardList(); }
+    toast('Canva에 연결했어요. 카드의 「Canva에서 그리기」를 눌러 주세요.', 5000);
+    return;
+  }
+  if (l.kind === 'error') {
+    toast(l.reason === 'return' ? 'Canva에서 돌아온 정보를 확인하지 못했어요. 카드의 「Canva에서 가져오기」를 눌러 주세요.' : `Canva 연결에 실패했어요 (${l.reason || '알 수 없음'}).`, 6000);
+    return;
+  }
+  const target = parseCanvaState(l.state || '');
+  if (target && target.workId !== work.id) {
+    const other = await works.get(target.workId);
+    if (other) { work = normalizeWork(other, defaults()); current = 0; await kv.set('currentId', work.id); renderAllUI(); }
+  }
+  let i = target ? work.cards.findIndex((c) => c.id === target.cardId) : -1;
+  if (i < 0 && l.design) i = work.cards.findIndex((c) => c.canvaDesignId === l.design);
+  if (i < 0 || !l.design) { toast('Canva 그림이 어느 카드 것인지 찾지 못했어요.'); return; }
+  select(i);
+  $('cardList').querySelector<HTMLElement>(`.card-row[data-i="${i}"]`)?.scrollIntoView({ block: 'center' });
+  await importFromCanva(i, l.design);
+}
+
 /* ================= start ================= */
 async function start() {
   settings = await loadSettings();
@@ -985,6 +1122,7 @@ async function start() {
   if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
   }
+  await handleCanvaLanding();
 }
 
 void start();

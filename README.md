@@ -23,7 +23,18 @@ npm test
 npm run build
 ```
 
-`npm run build` 결과물(`dist/`)은 정적 파일이라 어떤 정적 호스팅에도 올릴 수 있다. 홈 화면 설치·오프라인은 HTTPS(또는 localhost)에서만 동작한다.
+배포: https://cardnovel.vercel.app (Vercel 프로젝트 `cardnovel`). 정적 앱(`dist/`)과 Canva 연결용 서버리스 함수(`api/canva/*`)가 함께 올라간다. 홈 화면 설치·오프라인은 HTTPS(또는 localhost)에서만 동작한다.
+
+### Canva 연결 설정
+
+| 위치 | 값 |
+| --- | --- |
+| Canva 개발자 포털 → Authorized redirects | `https://cardnovel.vercel.app/api/canva/callback` |
+| Canva 개발자 포털 → Return navigation URL | `https://cardnovel.vercel.app/api/canva/return` |
+| Canva 개발자 포털 → Scopes | `asset:read` `asset:write` `design:content:read` `design:content:write` `design:meta:read` |
+| Vercel 환경 변수 | `CANVA_CLIENT_ID`, `CANVA_CLIENT_SECRET`, `CANVA_REDIRECT_URI`, `SESSION_SECRET` |
+
+Canva 토큰은 `/api/canva` 경로에만 붙는 암호화된 HttpOnly 쿠키에 보관되며, 브라우저 스크립트나 다른 서버로 가지 않는다.
 
 ## 지금 되는 것 (PRD P0 기준)
 
@@ -31,7 +42,7 @@ npm run build
 | --- | --- | --- |
 | P0-1 | PWA: 홈 화면 설치, 오프라인 열기, 1초 안 자동 저장 | 됨 |
 | P0-2 | API 키 설정: 모델 목록으로 키 확인, 끝 4자리만 표시, 지우기 | 됨 |
-| P0-3 | 글 AI(Claude·Gemini·GPT)와 그림 AI(Gemini·GPT·Claude SVG·올리기) 따로 선택 | 됨 (Canva는 P0-11) |
+| P0-3 | 글 AI(Claude·Gemini·GPT)와 그림 AI(Gemini·GPT·Claude SVG·Canva·올리기) 따로 선택 | 됨 |
 | P0-4 | 긴 원고 압축 · 줄거리 확장 · 나눈 원고 그대로(18장 아니면 합치기/나누기 미리 보기) | 됨 |
 | P0-5 | 카드 편집: 본문 순서 바꾸기, 카드별 다시 쓰기, 되돌리기 20단계 | 됨 |
 | P0-6 | 기존 캔버스 렌더러 이식(비율 4종, 테마 13종, 서체 6종, 01/20) | 됨 |
@@ -39,7 +50,7 @@ npm run build
 | P0-8 | 마지막 장: 시리즈·핸들·팔로우 문구 고정 + 덧붙임(질문·예고·한마디·여운·없음) | 됨 |
 | P0-9 | 보관함: 자동 저장, 사본, 파일로 내보내기·가져오기 | 됨 |
 | P0-10 | PNG/JPG 한 장, 20장 ZIP, 캡션 복사, 공유 시트로 인스타에 20장 | 됨 |
-| P0-11 | Canva에서 삽화 만들기 | 다음 단계 (서버리스 함수와 Canva 개발자 앱 필요) |
+| P0-11 | Canva에서 삽화 만들기: 카드 그림 자리 크기 디자인 → Canva 편집 → 돌아가기로 PNG 자동 반영 | 됨 (`api/canva/*`) |
 
 P1(Canva 완성 카드 마감, 구글 드라이브 백업, 인스타 API 직접 게시, AI 평가)은 아직이다.
 
@@ -57,6 +68,9 @@ src/
   ai/compose.ts    이야기 → 20장, 그림 그리기
   export.ts        PNG/JPG, ZIP, 공유
   store.ts         IndexedDB (localStorage 대체)
+  canva.ts         Canva 연결 (브라우저 쪽)
+api/canva/         Canva 서버리스 함수: login, callback, status, logout, design, export, return
+api/_lib/canva.ts  토큰 쿠키 암호화, PKCE, Canva API 호출, 돌아오기 서명 검증
 public/
   sw.js            오프라인 캐시
   manifest.webmanifest, icons/, fonts/

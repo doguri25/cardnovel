@@ -1,5 +1,5 @@
 // Offline support: the app shell and fonts are cached, AI and other API calls always go to the network.
-const VERSION = 'cardnovel-v1';
+const VERSION = 'cardnovel-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './fonts/maplestory-300.woff2', './fonts/maplestory-700.woff2', './icons/icon-192.png'];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -19,8 +19,11 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
   if (!sameOrigin && !FONT_HOSTS.includes(url.hostname)) return;
+  // server functions (Canva sign-in, status, export) are always live
+  if (sameOrigin && url.pathname.startsWith('/api/')) return;
 
   if (req.mode === 'navigate') {
+    // pages that carry a Canva landing (?canva=…) must reach the network too; the shell is the same file
     // network first, so a new deploy shows up; the cached shell when offline
     e.respondWith(
       fetch(req)
