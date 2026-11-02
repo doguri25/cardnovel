@@ -41,7 +41,7 @@ Canva 토큰은 `/api/canva` 경로에만 붙는 암호화된 HttpOnly 쿠키에
 `desktop/`은 배포된 앱(https://cardnovel.vercel.app)을 띄우는 Electron 앱이다. 웹을 고치면 설치형도 자동으로 최신이 되고, Canva 편집·로그인은 앱 창 안에서 열려 돌아오기가 앱 저장소로 바로 들어온다.
 
 - 설치 파일은 GitHub Actions(`.github/workflows/desktop.yml`)가 세 OS에서 만든다. `desktop/`을 바꿔 푸시하면 빌드 후 `desktop-v<버전>` 릴리즈(https://github.com/doguri25/cardnovel/releases)에 설치 파일이 올라간다. 버전은 `desktop/package.json`에서 정한다.
-- 파일: macOS `CardNovel-<버전>-mac-arm64.dmg`·`-mac-x64.dmg`, Windows `CardNovel-<버전>-win-x64.exe`, Ubuntu `CardNovel-<버전>-linux-amd64.deb`·`-linux-x86_64.AppImage`
+- 파일: macOS(Apple Silicon만) `CardNovel-<버전>-mac-arm64.dmg`, Windows `CardNovel-<버전>-win-x64.exe`, Ubuntu `CardNovel-<버전>-linux-amd64.deb`·`-linux-x86_64.AppImage`
 - 개발자 서명이 없어 처음 열 때 경고가 뜬다. 맥: 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」. 윈도우: 「추가 정보」 → 「실행」.
 - 데스크톱 앱의 작품·키 저장소는 브라우저와 따로다. 옮기려면 보관함의 「내보내기」/「가져오기」를 쓴다.
 

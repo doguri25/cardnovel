@@ -85,7 +85,6 @@ jobs:
             | 운영체제 | 받을 파일 |
             | --- | --- |
             | macOS (Apple Silicon, M1 이후) | `CardNovel-*-mac-arm64.dmg` |
-            | macOS (Intel) | `CardNovel-*-mac-x64.dmg` |
             | Windows | `CardNovel-*-win-x64.exe` |
             | Ubuntu | `CardNovel-*-linux-amd64.deb` 또는 `CardNovel-*-linux-x86_64.AppImage` |
 
