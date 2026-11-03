@@ -44,6 +44,24 @@ describe('starting a Canva AI picture', () => {
     expect(seen[0].body).toEqual({ prompt: 'Scene: an empty bus', aspect_ratio: 'landscape', idempotency_key: KEY });
   });
 
+  it('passes on the allowance Canva reports (also as text), when it resets and Canva\'s own usage page; says when Canva sent none', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    canvaAnswers(() => json({ job: { id: 'JOB3', status: 'in_progress' }, quota_usage: { used_percentage: '41', resets_at: 1767225600, usage_review_link: 'https://www.canva.com/settings/ai-usage' } }));
+    expect(await (await start({ prompt: 'x' })).json()).toEqual({ jobId: 'JOB3', status: 'pending', usage: 41, usageResets: 1767225600, usageLink: 'https://www.canva.com/settings/ai-usage' });
+    canvaAnswers(() => json({ job: { id: 'JOB4', status: 'in_progress' }, quota_usage: { used_percentage: 7, usage_review_link: 'javascript:alert(1)' } }));
+    expect(await (await start({ prompt: 'x' })).json()).toEqual({ jobId: 'JOB4', status: 'pending', usage: 7 });
+    canvaAnswers(() => json({ job: { id: 'JOB5', status: 'in_progress' } }));
+    expect(await (await start({ prompt: 'x' })).json()).toEqual({ jobId: 'JOB5', status: 'pending' });
+    // one log line per picture: whether Canva sent usage data, never tokens or links
+    expect(info.mock.calls.map((c) => String(c.join(' ')))).toEqual([
+      expect.stringContaining('quota_usage: used_percentage=41 resets_at=1767225600 usage_review_link=yes'),
+      expect.stringContaining('quota_usage: used_percentage=7 usage_review_link=yes'),
+      expect.stringContaining('quota_usage: none'),
+    ]);
+    expect(info.mock.calls.join(' ')).not.toContain('ACCESS');
+    info.mockRestore();
+  });
+
   it('makes its own key and leaves out a shape Canva does not draw; refuses an empty prompt or no sign-in', async () => {
     const seen = canvaAnswers(() => json({ job: { id: 'JOB2', status: 'in_progress' } }));
     await start({ prompt: 'x', aspect: '16:9', key: 'not-a-uuid' });

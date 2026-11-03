@@ -30,6 +30,27 @@ export function outcome(job: ImageJob): Outcome {
   }
 }
 
+interface QuotaUsage { used_percentage?: number | string; resets_at?: number | string; usage_review_link?: string }
+
+/** How much of the writer's Canva AI allowance is used after this picture, when it resets, and Canva's page to
+ *  review it. Canva leaves quota_usage out when it has no data. */
+export function usageOf(q: QuotaUsage | undefined): { usage?: number; usageResets?: number; usageLink?: string } {
+  const out: { usage?: number; usageResets?: number; usageLink?: string } = {};
+  const pct = Number(q?.used_percentage);
+  if (q?.used_percentage !== undefined && q.used_percentage !== '' && Number.isFinite(pct)) out.usage = Math.max(0, Math.min(100, Math.round(pct)));
+  const resets = Number(q?.resets_at);
+  if (q?.resets_at !== undefined && Number.isFinite(resets) && resets > 0) out.usageResets = Math.round(resets);
+  try {
+    const u = new URL(String(q?.usage_review_link ?? ''));
+    if (u.protocol === 'https:' && /(^|\.)canva\.com$/.test(u.hostname)) out.usageLink = u.toString();
+  } catch { /* no page */ }
+  return out;
+}
+/** One log line per picture saying what usage data Canva sent (no tokens, no links). */
+const describeQuota = (q: QuotaUsage | undefined): string => (q
+  ? `quota_usage: ${[q.used_percentage !== undefined ? `used_percentage=${q.used_percentage}` : '', q.resets_at !== undefined ? `resets_at=${q.resets_at}` : '', q.usage_review_link ? 'usage_review_link=yes' : ''].filter(Boolean).join(' ') || '(empty)'}`
+  : 'quota_usage: none');
+
 /** Canva's refusals, named for the app (see the Create image generation job API). */
 export function aiError(e: unknown): unknown {
   if (!(e instanceof HttpError)) return e;
@@ -56,13 +77,12 @@ export async function POST(req: Request): Promise<Response> {
     const key = UUID.test(String(body.key)) ? String(body.key) : crypto.randomUUID();
     const { token, setCookies } = await accessToken(req);
     cookies = setCookies;
-    const r = await canva<{ job: ImageJob; quota_usage?: { used_percentage?: number } }>(token, '/image-generations', {
+    const r = await canva<{ job: ImageJob; quota_usage?: QuotaUsage }>(token, '/image-generations', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ prompt, ...(aspect ? { aspect_ratio: aspect } : {}), idempotency_key: key }),
     }).catch((e) => { throw aiError(e); });
-    const used = r.quota_usage?.used_percentage;
-    // how much of the writer's Canva AI allowance is used, after this picture
-    return json({ jobId: r.job.id, ...outcome(r.job), ...(typeof used === 'number' ? { usage: used } : {}) }, 200, cookies);
+    console.info(`canva ai-image ${r.job.id}: ${describeQuota(r.quota_usage)}`);
+    return json({ jobId: r.job.id, ...outcome(r.job), ...usageOf(r.quota_usage) }, 200, cookies);
   } catch (e) {
     return errorResponse(e, cookies);
   }

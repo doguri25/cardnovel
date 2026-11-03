@@ -37,7 +37,7 @@ import { money } from './usage';
 import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
 import { afterLocalSave, renderDriveBox, startDriveSync, type DriveDeps } from './ui/drive';
-import { CANVA_MESSAGES, CANVA_STOP, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, canvaUsage, createDesign, exportDesign, parseCanvaState, pictureForCanva, pictureMessage, readLanding } from './canva';
+import { CANVA_MESSAGES, CANVA_STOP, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, canvaUsage, CANVA_USAGE_HELP, createDesign, exportDesign, parseCanvaState, pictureForCanva, pictureMessage, readLanding } from './canva';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -752,10 +752,23 @@ async function ensureScenes(indices: number[], signal?: AbortSignal): Promise<vo
     // the pictures can still be drawn from the scenes there are
   }
 }
+/** After drawing with Canva AI: how much of the allowance is used, or that Canva did not say. */
 const usageNote = () => {
   const u = work.imageAI.provider === 'canvaai' ? canvaUsage() : null;
-  return u === null ? '' : ` Canva AI 사용량 ${u}%.`;
+  if (!u) return '';
+  if (u.pct === null) return ' Canva가 AI 사용량을 알려 주지 않았어요.';
+  return ` Canva AI 사용량 ${u.pct}%${u.missing ? ' (이번엔 알려 주지 않아 지난 값)' : ''}.`;
 };
+const when = (ms: number, time = true) => new Date(ms).toLocaleString('ko-KR', time ? { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { month: 'long', day: 'numeric' });
+/** The Canva line's allowance part: the last figure Canva gave and when, when it resets, and Canva's own page. */
+function canvaUsageHTML(): string {
+  const u = canvaUsage();
+  const link = `<a href="${esc(u?.link || CANVA_USAGE_HELP)}" target="_blank" rel="noopener">Canva에서 사용량 보기</a>`;
+  if (!u) return `AI 사용량은 그림을 한 장 그리면 여기에 보여요. ${link}`;
+  if (u.pct === null) return `Canva가 AI 사용량을 알려 주지 않았어요. ${link}`;
+  const notes = [`${when(u.at)} 기준`, u.resetsAt ? `${when(u.resetsAt * 1000, false)} 초기화` : '', u.missing ? '마지막 그림에선 알려 주지 않음' : ''].filter(Boolean).join(' · ');
+  return `AI 사용량 <b>${u.pct}%</b> (${esc(notes)}) ${link}`;
+}
 
 /** Shows why a picture failed; when the Canva connection is the problem, with the button that fixes it. */
 function artError(e: unknown, prefix = '') {
@@ -1158,6 +1171,7 @@ function openSettings(pane: SettingsPane = 'keys') {
     <div class="toolbar" style="margin-top:16px"><span class="hint" style="margin-right:auto">앱 빌드 ${esc(BUILD)} · <a href="./about.html" target="_blank" rel="noopener">앱 소개</a> · <a href="./privacy.html" target="_blank" rel="noopener">개인정보처리방침</a> · <a href="./terms.html" target="_blank" rel="noopener">이용약관</a></span><button class="btn primary" type="button" data-a="done">저장하고 닫기</button></div>`,
   {
     size: 'mid',
+    top: true, // switching tabs changes the height: keep the tabs where they are
     wire: (box, close) => {
       box.querySelector('[data-a="close"]')!.addEventListener('click', close);
       const show = (p: SettingsPane) => {
@@ -1779,7 +1793,7 @@ async function renderCanvaStatus() {
   if (connected === null) { st.textContent = CANVA_MESSAGES.unavailable; return; }
   if (connected) {
     st.innerHTML = (p === 'canvaai'
-      ? `Canva에 연결됐어요. 「모든 그림 그리기」나 카드의 「AI 그림」을 누르면 Canva AI가 그려요 (Canva AI 사용량 차감${canvaUsage() !== null ? `, 지금 ${canvaUsage()}% 사용` : ''}).`
+      ? `Canva에 연결됐어요. 「모든 그림 그리기」나 카드의 「AI 그림」을 누르면 Canva AI가 그려요. ${canvaUsageHTML()}`
       : 'Canva에 연결됐어요. 카드마다 「Canva에서 그리기」를 누르세요.') + ' <button class="btn tiny" type="button" id="btnCanvaLogout">연결 끊기</button>';
     $('btnCanvaLogout').addEventListener('click', async () => { await canvaLogout().catch(() => undefined); void renderCanvaStatus(); });
   } else {

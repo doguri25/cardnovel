@@ -223,6 +223,8 @@ input[type="range"] { accent-color: var(--primary); }
 .modal { position: fixed; inset: 0; background: rgba(10,12,18,.5); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 20px; }
 .modal .box { background: var(--surface); border-radius: 16px; padding: 22px; max-width: 420px; width: 100%; box-shadow: var(--shadow); }
 .modal .box.wide { max-width: 760px; }
+/* tabbed dialogs: the top stays put, only the bottom moves when a tab is taller or shorter */
+.modal.at-top { align-items: flex-start; padding-top: max(20px, 6vh); }
 .saved { font-size: 12px; color: var(--muted); white-space: nowrap; margin-left: 4px; }
 .lib { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; padding-right: 4px; }
 .work { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
@@ -485,6 +487,7 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .m-only, .m-tabs, .m-card-bar { display: none; }
 #exportBox { margin-top: 16px; }
 .modal .box { max-height: calc(100dvh - 40px); overflow: auto; }
+.modal.at-top .box { max-height: calc(100dvh - max(20px, 6vh) - 20px); }
 @media (max-width: 760px) {
   body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
   body.m-typing { padding-bottom: 0; }
@@ -540,6 +543,8 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
   .m-menu .btn { justify-content: center; height: 44px; }
   .modal { padding: 10px; align-items: flex-end; }
   .modal .box { max-height: calc(100dvh - 20px); border-radius: 16px; }
+  .modal.at-top { align-items: flex-start; padding-top: max(10px, env(safe-area-inset-top)); }
+  .modal.at-top .box { max-height: calc(100dvh - 20px - env(safe-area-inset-top)); }
 }
 .update-bar { background: var(--surface-2); color: var(--text); }
 

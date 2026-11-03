@@ -66,7 +66,7 @@ export async function canvaStatus(): Promise<boolean | null> {
 }
 
 export const canvaLogin = (): void => { location.href = `${API}/login`; };
-export async function canvaLogout(): Promise<void> { await call('/logout', { method: 'POST' }); }
+export async function canvaLogout(): Promise<void> { await call('/logout', { method: 'POST' }); forgetCanvaUsage(); }
 
 export async function createDesign(opts: { width: number; height: number; title: string; image?: string; state: string }): Promise<{ designId: string; editUrl: string }> {
   const res = await call('/design', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(opts) });
@@ -122,9 +122,27 @@ async function download(url: string, signal?: AbortSignal): Promise<string> {
   return responseDataUrl(await call(`/page?u=${encodeURIComponent(url)}`, { signal }));
 }
 
-let usage: number | null = null;
-/** How much of the writer's Canva AI allowance was used (%) at the last picture, when Canva said. */
-export const canvaUsage = (): number | null => usage;
+/** The writer's Canva AI allowance as Canva last reported it: % used, when that was, when it resets, Canva's page to
+ *  review it, and whether the latest picture came without a figure. Kept in this browser so a reload still shows it. */
+export interface CanvaUsage { pct: number | null; at: number; resetsAt?: number; link?: string; missing: boolean }
+const USAGE_KEY = 'cardnovel.canvaUsage';
+/** Canva's help page on AI credits, for when it gives no page of its own. */
+export const CANVA_USAGE_HELP = 'https://www.canva.com/help/ai-access/';
+let usage: CanvaUsage | null = (() => {
+  try { const v = JSON.parse(localStorage.getItem(USAGE_KEY) || 'null') as CanvaUsage | null; return v && typeof v.at === 'number' ? v : null; } catch { return null; }
+})();
+export const canvaUsage = (): CanvaUsage | null => usage;
+function noteUsage(r: { usage?: number; usageResets?: number; usageLink?: string }) {
+  const pct = typeof r.usage === 'number' && Number.isFinite(r.usage) ? Math.max(0, Math.min(100, Math.round(r.usage))) : null;
+  usage = pct !== null
+    ? { pct, at: Date.now(), resetsAt: r.usageResets, link: r.usageLink, missing: false }
+    : { ...(usage ?? { pct: null, at: Date.now() }), link: r.usageLink ?? usage?.link, missing: true };
+  try { localStorage.setItem(USAGE_KEY, JSON.stringify(usage)); } catch { /* shown for this visit only */ }
+}
+export function forgetCanvaUsage(): void {
+  usage = null;
+  try { localStorage.removeItem(USAGE_KEY); } catch { /* nothing kept */ }
+}
 
 /** Asks Canva AI for one picture (Canva's image generation API, on the writer's Canva account) and waits for it. */
 export async function canvaAiImage(opts: { prompt: string; aspect: number }, signal?: AbortSignal, timing = CANVA_AI_TIMING): Promise<{ dataUrl: string }> {
@@ -133,8 +151,8 @@ export async function canvaAiImage(opts: { prompt: string; aspect: number }, sig
   let jobId = '';
   for (let attempt = 0; !jobId; attempt++) {
     try {
-      const r = (await (await post('/ai-image', body, signal)).json()) as { jobId: string; usage?: number };
-      if (typeof r.usage === 'number' && Number.isFinite(r.usage)) usage = Math.max(0, Math.min(100, Math.round(r.usage)));
+      const r = (await (await post('/ai-image', body, signal)).json()) as { jobId: string; usage?: number; usageResets?: number; usageLink?: string };
+      noteUsage(r);
       jobId = r.jobId;
     } catch (e) {
       // two cards at a time can touch Canva's rate limit (20 pictures a minute); wait it out twice

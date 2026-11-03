@@ -41,11 +41,13 @@ type Closer = () => void;
 let closeCurrent: Closer | null = null;
 
 /** Opens the shared modal with the given HTML; `wire` attaches handlers. Returns a function that closes it. */
-export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; wire?: (box: HTMLElement, close: Closer) => void; onClose?: () => void } = {}): Closer {
+/** `top`: the dialog's top stays put and only its bottom grows or shrinks (for dialogs whose tabs change the height). */
+export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; top?: boolean; wire?: (box: HTMLElement, close: Closer) => void; onClose?: () => void } = {}): Closer {
   closeCurrent?.();
   const modal = $('modal'), box = $('modalBox');
   const opener = document.activeElement as HTMLElement | null;
   box.className = 'box' + (opts.size ? ' ' + opts.size : '');
+  modal.classList.toggle('at-top', !!opts.top);
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
   box.innerHTML = html;
@@ -66,6 +68,7 @@ export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; wire
   const onBackdrop = (e: MouseEvent) => { if (e.target === modal) close(); };
   const close: Closer = () => {
     modal.hidden = true;
+    modal.classList.remove('at-top');
     box.innerHTML = '';
     document.removeEventListener('keydown', onKey);
     modal.removeEventListener('click', onBackdrop);

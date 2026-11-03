@@ -46,7 +46,20 @@ describe('drawing with Canva AI', () => {
       return png();
     }));
     await canvaAiImage({ prompt: 'x', aspect: 1 }, undefined, FAST);
-    expect(canvaUsage()).toBe(42);
+    expect(canvaUsage()).toMatchObject({ pct: 42, missing: false });
+    // kept in this browser, so a reload still shows it
+    expect(JSON.parse(localStorage.getItem('cardnovel.canvaUsage')!)).toMatchObject({ pct: 42 });
+  });
+
+  it('keeps the last figure when Canva sends none, and says so', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/canva/ai-image') return json({ jobId: 'J10', status: 'pending' });
+      if (url === '/api/canva/ai-image-job') return json({ status: 'success', url: LINK, width: 1, height: 1 });
+      return png();
+    }));
+    await canvaAiImage({ prompt: 'x', aspect: 1 }, undefined, FAST);
+    expect(canvaUsage()).toMatchObject({ pct: 42, missing: true });
+    localStorage.removeItem('cardnovel.canvaUsage');
   });
 
   it('goes through the page proxy when the browser may not read Canva\'s link', async () => {
