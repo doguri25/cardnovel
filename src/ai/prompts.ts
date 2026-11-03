@@ -5,6 +5,9 @@ import { layoutOf } from '../render';
 
 const str = { type: 'string' } as const;
 
+/** How a card's scene is written: the same rule when composing and when a changed card's scene is written again. */
+const SCENE_RULE = '그 카드 글의 순간을 그림 한 장으로 옮긴 영어 한두 문장. 인물은 characters의 이름으로 부르고, 누가·어디서·언제·무엇을 하는지·핵심 사물·거리(close-up, medium shot, wide shot)를 눈에 보이는 것만 씁니다. 생각·감정·회상은 표정·몸짓·빛·사물로 바꿔 씁니다. 글자·말풍선은 넣지 않습니다.';
+
 /** One schema for all three providers (strict-mode compatible: every key required, no extras). */
 export const COMPOSE_SCHEMA = {
   type: 'object',
@@ -33,6 +36,16 @@ export const COMPOSE_SCHEMA = {
     },
     coverScene: str,
     summary: str,
+  },
+};
+
+export const SCENES_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['scenes'],
+  properties: {
+    scenes: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: false, required: ['card', 'scene'], properties: { card: { type: 'integer' }, scene: str } },
+    },
   },
 };
 
@@ -92,7 +105,7 @@ ${MODE_RULES[mode]}
 - label: 그 카드의 흐름을 2~6자로(예: 시작, 첫 만남, 어긋남, 전환, 절정, 그 후).
 - title: 대부분 빈 문자열. 꼭 필요한 카드에만 짧은 소제목.
 - accent: 이야기가 뒤집히거나 감정이 가장 높은 카드 1~2장만 true.
-- scene: 그 카드 글의 순간을 그림 한 장으로 옮긴 영어 한두 문장. 인물은 characters의 이름으로 부르고, 누가·어디서·언제·무엇을 하는지·핵심 사물·거리(close-up, medium shot, wide shot)를 눈에 보이는 것만 씁니다. 생각·감정·회상은 표정·몸짓·빛·사물로 바꿔 씁니다. 글자·말풍선은 넣지 않습니다.
+- scene: ${SCENE_RULE}
 
 공통: 감탄사·이모지 없이, 잔혹하거나 선정적인 묘사 없이 씁니다.
 
@@ -180,6 +193,29 @@ export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cov
     COMPOSITION[layoutOf(c)],
     'No text, letters, numbers, captions, speech bubbles, logos or watermarks anywhere in the image.',
   ].filter(Boolean).join('\n');
+}
+
+/** Scenes for cards whose words changed since their scene was written (or that have none), in one request. */
+export function scenesPrompt(w: Work, indices: number[]): string {
+  const num = (i: number) => String(i + 1).padStart(2, '0');
+  const cards = indices.map((i) => {
+    const c = w.cards[i];
+    const prev = i > 1 ? stripMarks(w.cards[i - 1].text) : '';
+    return [
+      `${num(i)}번 카드: ${stripMarks(c.kind === 'cover' ? `${c.title} — ${c.text}` : c.text)}`,
+      prev ? `  앞 카드: ${prev}` : '',
+      c.scene.trim() ? `  예전 장면: ${c.scene.trim()}` : '',
+    ].filter(Boolean).join('\n');
+  }).join('\n');
+  return `카드소설 「${stripMarks(w.cards[0].title) || '제목 없음'}」에서 글이 바뀐 카드의 그림 장면을 다시 씁니다.
+${w.style.characters.trim() ? `등장인물(이 이름을 그대로 씁니다): ${w.style.characters.trim()}\n` : ''}그림체: ${w.style.prompt.trim() || '자유'}
+
+scene 규칙: ${SCENE_RULE}
+표지(01번)는 이야기의 무대와 핵심 사물을 보여 주는 장면으로 씁니다. 예전 장면은 지금 글과 맞는 부분만 살립니다.
+
+${cards}
+
+JSON으로 {"scenes": [{"card": 카드 번호(정수), "scene": "영어 장면"}]}만 돌려주세요. 위 카드마다 하나씩.`;
 }
 
 /* ---------- Canva AI: its image models weigh the start of a prompt most, so the scene goes first ---------- */

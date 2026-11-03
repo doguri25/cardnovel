@@ -1,6 +1,6 @@
 import './styles.css';
 import { aiMessage, AiError, listModels, onUsage, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
-import { compose, drawCard, drawCharacterSheet, rewriteCard, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
+import { compose, drawCard, drawCharacterSheet, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
@@ -37,7 +37,7 @@ import { money } from './usage';
 import { makeShareLink, openShareList, type ShareDeps } from './ui/share';
 import { shareStatus } from './share';
 import { afterLocalSave, renderDriveBox, startDriveSync, type DriveDeps } from './ui/drive';
-import { CANVA_MESSAGES, CANVA_STOP, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, createDesign, exportDesign, parseCanvaState, pictureForCanva, pictureMessage, readLanding } from './canva';
+import { CANVA_MESSAGES, CANVA_STOP, CanvaError, canvaLogin, canvaLogout, canvaMessage, canvaState, canvaStatus, canvaUsage, createDesign, exportDesign, parseCanvaState, pictureForCanva, pictureMessage, readLanding } from './canva';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -437,6 +437,7 @@ function cardRowHTML(card: Card, i: number): string {
           ${isBody ? `<label class="chk" title="제목과 막대를 강조색으로"><input type="checkbox" data-f="accent" ${card.accent ? 'checked' : ''}> 강조 카드</label>` : ''}
         </div>
         ${isBody ? `<input class="input" data-f="title" placeholder="${layout === 'quote' ? '말한 사람 (선택, 예: 지수)' : '소제목 (선택)'}" aria-label="${layout === 'quote' ? '말한 사람' : '소제목'}" value="${esc(card.title)}">` : ''}
+        ${!isOutro ? `<label class="scene-field"><span>그릴 장면${sceneStale(card) && (card.text.trim() || card.title.trim()) ? ' <em>글이 바뀌어 그릴 때 새로 써요</em>' : ''}</span><textarea class="input" data-f="scene" rows="2" placeholder="그림에 담을 장면 (영어 권장 · 비워 두면 그릴 때 AI가 써요)">${esc(card.scene)}</textarea></label>` : ''}
       </div>
       <div class="meta">
         <span class="kind">${KIND_NAME[card.kind]}${isCover ? ' · 훅은 25자 안팎' : ''}${isOutro ? ' · 60자 이내' : ''}</span>
@@ -586,6 +587,8 @@ function wireCardList() {
     pushUndoTyping();
     if (f === 'showLabel' || f === 'accent') (card as unknown as Record<string, boolean>)[f] = el.checked;
     else (card as unknown as Record<string, string>)[f] = el.value;
+    // a scene the writer typed is theirs: it stays until the card's words change a lot again
+    if (f === 'scene') { card.sceneFor = card.text; r.querySelector('.scene-field em')?.remove(); }
     updateCount(r, card);
     save(); scheduleRender(); scheduleReview();
   });
@@ -625,6 +628,7 @@ async function onCardAction(act: string, i: number) {
     await drawOne(i);
   } else if (act === 'coverCands') {
     const p = work.imageAI.provider as 'gemini' | 'openai' | 'claude' | 'canvaai';
+    await ensureScenes([0]);
     await openCoverCandidates(app, () => cardRefs(0), IMG_NAME[p], p === 'canvaai' ? null : settings.prices[p] ?? 0, () => { refreshRow(0); });
   } else if (act === 'rewrite') {
     await rewrite(i);
@@ -697,8 +701,11 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
   if (artBusy.has(card.id)) return false;
   artBusy.add(card.id);
   refreshRow(i);
-  if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 그리는 중…`, 'busy');
   try {
+    if (!quiet) {
+      await ensureScenes([i], signal);
+      setStatus($('artStatus'), `${i + 1}번 카드 그림을 그리는 중…`, 'busy');
+    }
     const out = await drawCard(work, i, ai, cardRefs(i), signal);
     delete card.img; delete card.svg;
     if (out.img) card.img = out.img;
@@ -706,7 +713,7 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
     card.imgSource = ai.provider;
     card.imgPos = 'center';
     save();
-    if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.`);
+    if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.${usageNote()}`);
     return true;
   } catch (e) {
     if (!quiet) artError(e);
@@ -718,6 +725,25 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
     scheduleRender();
   }
 }
+
+/** Before drawing: cards whose words changed a lot since their scene was written (or that have none) get a new scene,
+ *  all in one text-AI request, so the picture shows what the card says now. Without a text AI the old scenes are used. */
+async function ensureScenes(indices: number[], signal?: AbortSignal): Promise<void> {
+  const stale = indices.filter((i) => { const c = work.cards[i]; return sceneStale(c) && !!(c.text.trim() || c.title.trim()); });
+  const ai = textAI();
+  if (!stale.length || !ai || !online()) return;
+  setStatus($('artStatus'), `글이 바뀐 카드 ${stale.length}장의 그림 장면을 먼저 다시 쓰는 중…`, 'busy');
+  try {
+    if (await refreshScenes(work, stale, ai, signal)) { save(); stale.forEach((i) => refreshRow(i)); }
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    // the pictures can still be drawn from the scenes there are
+  }
+}
+const usageNote = () => {
+  const u = work.imageAI.provider === 'canvaai' ? canvaUsage() : null;
+  return u === null ? '' : ` Canva AI 사용량 ${u}%.`;
+};
 
 /** Shows why a picture failed; when the Canva connection is the problem, with the button that fixes it. */
 function artError(e: unknown, prefix = '') {
@@ -745,12 +771,15 @@ async function drawAll() {
     targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
     await keepVersion('draw');
   }
+  const staleN = textAI() ? targets.filter((i) => sceneStale(work.cards[i])).length : 0;
+  const sceneLine = staleN ? [`글이 바뀐 ${staleN}장은 그리기 전에 그림 장면을 글 AI로 다시 써요 (한 번에).`] : [];
   const ok = ai.provider === 'canvaai'
     ? await confirmBox(`그림 ${targets.length}장을 Canva AI로 그립니다. 연결한 Canva 계정의 AI 사용량이 장마다 차감돼요.`, {
       ok: '그리기', detail: [
         '돈은 이 앱에서 따로 나가지 않아요. Canva 요금제의 AI 사용 한도 안에서 그려요.',
         '장당 20~40초쯤 걸려요. 한도에 닿으면 거기서 멈추고, 그린 그림은 남아요.',
         '그림체 지시문과 인물 생김새를 장마다 함께 보내 그림체를 맞춰요.',
+        ...sceneLine,
       ],
     })
     : await confirmBox(`그림 ${targets.length}장을 ${IMG_NAME[ai.provider]}(으)로 그립니다. 예상 비용은 약 $${((settings.prices[ai.provider] ?? 0) * targets.length).toFixed(2)}예요.`, {
@@ -758,6 +787,7 @@ async function drawAll() {
         `이번 달 지금까지 추정 ${money(await monthTotal(app))}${settings.monthlyBudget ? ` (예산 ${money(settings.monthlyBudget)})` : ''}.`,
         '장당 단가는 설정에서 고칠 수 있어요.',
         ai.provider === 'claude' ? 'Claude SVG는 장당 몇 초~30초 걸려요.' : '표지를 먼저 그리고, 그 그림을 참고해 나머지 그림체를 맞춰요.',
+        ...sceneLine,
       ],
     });
   if (!ok) return;
@@ -767,6 +797,7 @@ async function drawAll() {
   $<HTMLButtonElement>('btnArtAll').disabled = true;
   let done = 0, failed = 0, stop: unknown = null;
   const status = () => setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${targets.length}`, 'busy');
+  try { await ensureScenes(targets, signal); } catch { /* stopped: handled below */ }
   status();
   const one = async (i: number) => {
     try { await drawOne(i, signal, true); done++; } catch (e) {
@@ -782,13 +813,19 @@ async function drawAll() {
   if (targets[0] === 0) await one(targets.shift()!);
   const queue = [...targets];
   const worker = async () => { while (queue.length && !signal.aborted && !stop) await one(queue.shift()!); };
-  await Promise.all([worker(), worker()]);
+  // Canva AI allows 20 pictures a minute per writer and each takes 20–40 s, so three at a time; the others two
+  await Promise.all(Array.from({ length: ai.provider === 'canvaai' ? 3 : 2 }, worker));
   artCtl = null;
   $('btnArtStop').hidden = true;
   $<HTMLButtonElement>('btnArtAll').disabled = false;
   if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.`);
   else if (stop) artError(stop, done ? `${done}장은 넣었습니다. ` : '');
-  else setStatus($('artStatus'), failed ? `${done}장을 넣었고 ${failed}장은 실패했어요. 해당 카드의 「AI 그림」을 다시 눌러 보세요.` : `그림 ${done}장을 모두 넣었어요.`);
+  else if (failed) {
+    const st = $('artStatus');
+    st.className = 'status';
+    st.innerHTML = `${esc(`${done}장을 넣었고 ${failed}장은 실패했어요.${usageNote()}`)} <button class="btn tiny primary" type="button" data-a="artRetry">빠진 ${failed}장 다시 그리기</button>`;
+    st.querySelector('[data-a="artRetry"]')!.addEventListener('click', () => void drawAll());
+  } else setStatus($('artStatus'), `그림 ${done}장을 모두 넣었어요.${usageNote()}`);
 }
 
 async function onUpload(file: File) {
@@ -1730,7 +1767,7 @@ async function renderCanvaStatus() {
   if (connected === null) { st.textContent = CANVA_MESSAGES.unavailable; return; }
   if (connected) {
     st.innerHTML = (p === 'canvaai'
-      ? 'Canva에 연결됐어요. 「모든 그림 그리기」나 카드의 「AI 그림」을 누르면 Canva AI가 그려요 (Canva AI 사용량 차감).'
+      ? `Canva에 연결됐어요. 「모든 그림 그리기」나 카드의 「AI 그림」을 누르면 Canva AI가 그려요 (Canva AI 사용량 차감${canvaUsage() !== null ? `, 지금 ${canvaUsage()}% 사용` : ''}).`
       : 'Canva에 연결됐어요. 카드마다 「Canva에서 그리기」를 누르세요.') + ' <button class="btn tiny" type="button" id="btnCanvaLogout">연결 끊기</button>';
     $('btnCanvaLogout').addEventListener('click', async () => { await canvaLogout().catch(() => undefined); void renderCanvaStatus(); });
   } else {

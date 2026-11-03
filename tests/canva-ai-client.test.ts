@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CANVA_STOP, CanvaError, canvaAiImage, canvaAspect, canvaMessage, pictureMessage } from '../src/canva';
+import { CANVA_STOP, CanvaError, canvaAiImage, canvaAspect, canvaMessage, canvaUsage, pictureMessage } from '../src/canva';
 import { AiError } from '../src/ai/providers';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -37,6 +37,16 @@ describe('drawing with Canva AI', () => {
     expect(String(calls[0].body!.key)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(calls.filter((c) => c.url.endsWith('/ai-image-job'))).toHaveLength(3);
     expect(calls.some((c) => c.url.startsWith('/api/canva/page'))).toBe(false);
+  });
+
+  it('remembers how much of the Canva AI allowance is used', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/canva/ai-image') return json({ jobId: 'J9', status: 'pending', usage: 41.6 });
+      if (url === '/api/canva/ai-image-job') return json({ status: 'success', url: LINK, width: 1, height: 1 });
+      return png();
+    }));
+    await canvaAiImage({ prompt: 'x', aspect: 1 }, undefined, FAST);
+    expect(canvaUsage()).toBe(42);
   });
 
   it('goes through the page proxy when the browser may not read Canva\'s link', async () => {

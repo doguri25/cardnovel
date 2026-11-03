@@ -1,10 +1,11 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
-import { BODY_COUNT, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
+import { diffWords } from '../diff';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
 import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
-import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
+import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SCENES_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, scenesPrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
 
 export interface TextAI { provider: TextRequest['provider']; key: string; model: string }
 
@@ -38,6 +39,7 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
   cover.title = s(fixed?.title) || s(a.title) || cover.title;
   cover.text = s(fixed?.hook) || s(a.hook) || cover.text;
   cover.scene = s(a.coverScene);
+  cover.sceneFor = cover.text;
   for (let i = 0; i < BODY_COUNT; i++) {
     const c = w.cards[i + 1];
     const src = cards[i] ?? {};
@@ -46,6 +48,7 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
     c.label = (keep && keep.label) || s(src.label);
     c.title = s(src.title);
     c.scene = s(src.scene);
+    c.sceneFor = c.text;
     c.accent = !!src.accent;
     c.showLabel = false;
   }
@@ -88,6 +91,38 @@ export async function compose(w: Work, story: string, mode: InputMode, outroKind
   if (!Array.isArray(a.cards) || a.cards.filter((c) => s(c?.text)).length < 3) throw new AiError('invalid_json');
   applyCompose(w, a, undefined, keepStyle);
   return { mode: m, usedAI: true };
+}
+
+/* ================= scenes that follow the card's words ================= */
+/** Share of the words that changed between two texts (0 = same, 1 = all different), spaces not counted. */
+export function changedShare(a: string, b: string): number {
+  const len = (t: string) => t.replace(/\s+/g, '').length;
+  const total = len(a) + len(b);
+  if (!total) return 0;
+  return diffWords(a, b).filter((p) => p.op !== 'eq').reduce((n, p) => n + len(p.text), 0) / total;
+}
+
+/** A card to draw whose scene is missing, or whose words changed a lot since the scene was written. */
+export function sceneStale(c: Card): boolean {
+  if (c.kind === 'outro') return false;
+  if (!c.scene.trim()) return true;
+  return c.sceneFor !== undefined && changedShare(c.sceneFor, c.text) > 0.2;
+}
+
+/** Writes the scenes of these cards again from their current words, in one request. Returns how many were updated. */
+export async function refreshScenes(w: Work, indices: number[], ai: TextAI, signal?: AbortSignal): Promise<number> {
+  if (!indices.length) return 0;
+  const r = await askJSON<{ scenes?: { card?: number; scene?: string }[] }>(ai, scenesPrompt(w, indices), SCENES_SCHEMA, signal, 4000, 'scene');
+  let n = 0;
+  for (const x of Array.isArray(r.scenes) ? r.scenes : []) {
+    const i = Number(x?.card) - 1;
+    const scene = s(x?.scene);
+    if (!indices.includes(i) || !scene) continue;
+    w.cards[i].scene = scene;
+    w.cards[i].sceneFor = w.cards[i].text;
+    n++;
+  }
+  return n;
 }
 
 export async function rewriteCard(w: Work, index: number, ask: string, ai: TextAI, signal?: AbortSignal): Promise<string> {

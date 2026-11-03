@@ -28,6 +28,8 @@ export interface Card {
   text: string;
   /** what the illustration of this card shows (English, written by the text AI) */
   scene: string;
+  /** the card's words when its scene was written; when they change a lot the scene is written again before drawing */
+  sceneFor?: string;
   /** turning point or emotional peak: the title and bar use the theme's accent colour */
   accent: boolean;
   svg?: string;

@@ -56,11 +56,13 @@ export async function POST(req: Request): Promise<Response> {
     const key = UUID.test(String(body.key)) ? String(body.key) : crypto.randomUUID();
     const { token, setCookies } = await accessToken(req);
     cookies = setCookies;
-    const r = await canva<{ job: ImageJob }>(token, '/image-generations', {
+    const r = await canva<{ job: ImageJob; quota_usage?: { used_percentage?: number } }>(token, '/image-generations', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ prompt, ...(aspect ? { aspect_ratio: aspect } : {}), idempotency_key: key }),
     }).catch((e) => { throw aiError(e); });
-    return json({ jobId: r.job.id, ...outcome(r.job) }, 200, cookies);
+    const used = r.quota_usage?.used_percentage;
+    // how much of the writer's Canva AI allowance is used, after this picture
+    return json({ jobId: r.job.id, ...outcome(r.job), ...(typeof used === 'number' ? { usage: used } : {}) }, 200, cookies);
   } catch (e) {
     return errorResponse(e, cookies);
   }

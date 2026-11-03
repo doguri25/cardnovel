@@ -38,7 +38,7 @@ describe('starting a Canva AI picture', () => {
     const seen = canvaAnswers(() => json({ job: { id: 'JOB1', status: 'in_progress' }, quota_usage: { used_percentage: 12 } }));
     const res = await start({ prompt: 'Scene: an empty bus', aspect: 'landscape', key: KEY });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ jobId: 'JOB1', status: 'pending' });
+    expect(await res.json()).toEqual({ jobId: 'JOB1', status: 'pending', usage: 12 });
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ url: GEN, method: 'POST', auth: 'Bearer ACCESS' });
     expect(seen[0].body).toEqual({ prompt: 'Scene: an empty bus', aspect_ratio: 'landscape', idempotency_key: KEY });

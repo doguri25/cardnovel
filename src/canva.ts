@@ -122,6 +122,10 @@ async function download(url: string, signal?: AbortSignal): Promise<string> {
   return responseDataUrl(await call(`/page?u=${encodeURIComponent(url)}`, { signal }));
 }
 
+let usage: number | null = null;
+/** How much of the writer's Canva AI allowance was used (%) at the last picture, when Canva said. */
+export const canvaUsage = (): number | null => usage;
+
 /** Asks Canva AI for one picture (Canva's image generation API, on the writer's Canva account) and waits for it. */
 export async function canvaAiImage(opts: { prompt: string; aspect: number }, signal?: AbortSignal, timing = CANVA_AI_TIMING): Promise<{ dataUrl: string }> {
   // one key per picture: a retried start returns the same job instead of drawing (and charging) twice
@@ -129,7 +133,9 @@ export async function canvaAiImage(opts: { prompt: string; aspect: number }, sig
   let jobId = '';
   for (let attempt = 0; !jobId; attempt++) {
     try {
-      jobId = ((await (await post('/ai-image', body, signal)).json()) as { jobId: string }).jobId;
+      const r = (await (await post('/ai-image', body, signal)).json()) as { jobId: string; usage?: number };
+      if (typeof r.usage === 'number' && Number.isFinite(r.usage)) usage = Math.max(0, Math.min(100, Math.round(r.usage)));
+      jobId = r.jobId;
     } catch (e) {
       // two cards at a time can touch Canva's rate limit (20 pictures a minute); wait it out twice
       if (e instanceof CanvaError && e.code === 'too_many_requests' && attempt < 2) { await wait((timing.retry ?? 8000) * (attempt + 1), signal); continue; }
