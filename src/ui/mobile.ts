@@ -38,7 +38,7 @@ export function wireMobile(app: App): void {
 
   $('btnSaveAllM').addEventListener('click', () => $('btnSaveAll').click());
   $('btnMenu').addEventListener('click', () => {
-    const items: [string, string][] = [['btnPalette', '빠른 실행 (찾아서 하기)'], ['btnLibrary', '보관함'], ['btnVersions', '버전 기록'], ['btnSettings', '설정'], ['btnUsage', '사용량 · 비용'], ['btnCaption', '캡션 복사'], ['btnSaveAll', '전체 ZIP 저장']];
+    const items: [string, string][] = [['btnNewWork', '새 작품 시작'], ['btnPalette', '빠른 실행 (찾아서 하기)'], ['btnLibrary', '보관함'], ['btnVersions', '버전 기록'], ['btnSettings', '설정'], ['btnUsage', '사용량 · 비용'], ['btnCaption', '캡션 복사'], ['btnSaveAll', '전체 ZIP 저장']];
     openModal(`<div class="panel-head"><h2>메뉴</h2></div><div class="m-menu">${items.map(([id, label]) => `<button class="btn" type="button" data-id="${id}">${label}</button>`).join('')}</div>`, {
       wire: (box, close) => box.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((b) => b.addEventListener('click', () => { close(); $(b.dataset.id!).click(); })),
     });

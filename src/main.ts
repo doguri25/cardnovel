@@ -1063,6 +1063,7 @@ function renderAllUI() {
   renderFinishBox(app);
   renderStepStatus();
   renderPrecheck(app);
+  renderNextWork();
   void renderTextAI();
   void renderImageAI();
   scheduleRender();
@@ -1442,15 +1443,34 @@ async function openLibrary() {
   });
 }
 
+/** Nothing written or drawn yet: a fresh work that can be dropped without losing anything. */
+const isBlank = (w: Work) => !w.source.text.trim() && w.cards.every((c) => !c.text.trim() && !c.title.trim() && !c.img && !c.svg);
+
+/** Saves this work (it stays in the library) and opens an empty one, with a way back to the one just left. */
 async function startNewWork() {
+  // on a phone the keyboard would jump up: only a computer puts the cursor in the story box
+  const focusStory = () => { if (matchMedia('(min-width: 761px)').matches) $('story').focus(); };
+  if (isBlank(work)) { setTab('story'); focusStory(); toast('이미 새 작품이에요. 이야기를 넣어 시작하세요.'); return; }
   await persist(true);
   await keepVersion('leave');
+  const left = work.id, leftTitle = work.cards[0].title.trim();
   work = newWork(defaults());
   lastTimedVersion = Date.now();
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   save(); renderAllUI(); setTab('story');
-  toast('새 작품을 시작했어요.');
+  focusStory();
+  toast(`새 작품을 시작했어요. ${leftTitle ? `「${leftTitle}」은(는)` : '방금 작품은'} 보관함에 저장돼 있어요.`, 7000, { label: '방금 작품 열기', run: () => void backToWork(left) });
 }
+/** From the 「새 작품」 notice: back to the work just left; the new one goes away if nothing was written in it. */
+async function backToWork(id: string) {
+  const back = await works.get(id);
+  if (!back) { toast('보관함에서 찾지 못했어요.'); return; }
+  if (isBlank(work)) { clearTimeout(persistTimer); dirty = false; await works.del(work.id); } else await persist(true);
+  await openWork(back, false);
+  toast(`${back.cards[0].title.trim() ? `「${back.cards[0].title.trim()}」` : '방금 작품'}(으)로 돌아왔어요.`);
+}
+/** 「이 시리즈 다음 회」 at the end of 내보내기 only when the work is in a series. */
+const renderNextWork = () => { $('btnNextEpisodeEx').hidden = !seriesName(work); $('nextWorkRow').classList.toggle('one', !seriesName(work)); };
 
 /* ================= quick run (Ctrl/⌘+K) ================= */
 function paletteCommands(): Command[] {
@@ -1573,6 +1593,9 @@ async function share() {
 /* ================= wiring ================= */
 function wire() {
   $('btnLibrary').addEventListener('click', () => void openLibrary());
+  $('btnNewWork').addEventListener('click', () => void startNewWork());
+  $('btnNewWorkEx').addEventListener('click', () => void startNewWork());
+  $('btnNextEpisodeEx').addEventListener('click', () => void startNextEpisode(work.id));
   $('btnUsage').addEventListener('click', () => void openUsage(app));
   $('btnSettings').addEventListener('click', () => openSettings());
   $('btnCaption').addEventListener('click', () => void copyCaption());
@@ -1726,7 +1749,7 @@ function wire() {
   $('btnNextEpisode').addEventListener('click', () => void startNextEpisode(work.id));
   $('btnBible').addEventListener('click', () => void openBible(app));
   for (const f of ['series', 'handle', 'follow'] as const) {
-    $(f).addEventListener('input', () => { work[f] = $<HTMLInputElement>(f).value; save(); renderStoryPanel(); refreshRow(TOTAL_CARDS - 1); scheduleRender(); });
+    $(f).addEventListener('input', () => { work[f] = $<HTMLInputElement>(f).value; save(); renderStoryPanel(); refreshRow(TOTAL_CARDS - 1); renderNextWork(); scheduleRender(); });
   }
 
   // preview
