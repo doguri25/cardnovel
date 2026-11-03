@@ -86,6 +86,7 @@ const app: App = {
   renderLook: () => renderLook(),
   keepVersion: (reason) => keepVersion(reason),
   goCard: (i, focus) => goCard(i, focus),
+  showCard: (i) => showCard(i),
   undo: () => undo(),
   undoToast: (msg) => undoToast(msg),
   openCaption: () => openCaptionHelper(),
@@ -501,7 +502,18 @@ function select(i: number) {
   if (i === current) return;
   current = Math.max(0, Math.min(TOTAL_CARDS - 1, i));
   document.querySelectorAll('.card-row').forEach((r, k) => r.classList.toggle('active', k === current));
+  markShown();
   scheduleRender();
+}
+/** In 다듬기, the note or fix about the card the preview shows is marked. */
+const markShown = () => document.querySelectorAll<HTMLElement>('#reviewBody [data-card], #proofBody [data-card]').forEach((el) => el.classList.toggle('on', Number(el.dataset.card) === current));
+
+/** The preview beside 다듬기 turns to card i, to read a suggestion next to the card it is about. */
+function showCard(i: number) {
+  // on a phone the preview is not beside the panel: open the card instead
+  if (!$('stage').offsetParent) { goCard(i); return; }
+  select(i);
+  markShown();
 }
 
 /** Shows card i for editing: the 카드 step, the card selected and scrolled to, and with `focus` its words ready to type. */

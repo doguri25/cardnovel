@@ -30,6 +30,8 @@ export interface App {
   keepVersion(reason: VersionReason): Promise<void>;
   /** shows a card for editing: its step, the card selected and scrolled to, optionally its text focused */
   goCard(i: number, focus?: boolean): void;
+  /** shows card i in the preview beside the panel without leaving the step (on a phone, where it is not beside it, opens the card) */
+  showCard(i: number): void;
   /** undoes the last text change */
   undo(): void;
   /** a notice with a 「되돌리기」 button for the change just made */

@@ -58,8 +58,8 @@ export function renderProof(app: App): void {
         const st = states[k];
         const kinds = [...new Set(it.changes.map((c) => c.kind))].map((c) => `<span class="kind">${PROOF_KIND_NAME[c]}</span>`).join('');
         return `
-        <div class="proof-item ${st}">
-          <div class="head">${it.index >= 0 ? `<button class="badge" type="button" data-go="${it.index}" title="이 카드로 가기">${esc(it.label)}</button>` : `<span class="badge">${esc(it.label)}</span>`}${kinds}</div>
+        <div class="proof-item ${st} ${it.index >= 0 && it.index === app.current() ? 'on' : ''}" ${it.index >= 0 ? `data-card="${it.index}" title="누르면 옆 미리보기가 이 카드로 바뀌어요"` : ''}>
+          <div class="head">${it.index >= 0 ? `<button class="badge" type="button" data-show="${it.index}" title="옆 미리보기에서 이 카드 보기">${esc(it.label)}</button>` : `<span class="badge">${esc(it.label)}</span>`}${kinds}${it.index >= 0 ? `<button class="btn tiny go-edit" type="button" data-go="${it.index}">카드에서 고치기</button>` : ''}</div>
           <div class="diff">${diffHTML(it.from, it.to)}</div>
           ${it.changes.length ? `<ul class="why">${it.changes.slice(0, 4).map((c) => `<li><span>${PROOF_KIND_NAME[c.kind]}</span> ${esc(c.from)} → ${esc(c.to)}</li>`).join('')}</ul>` : ''}
           ${it.lostMarks ? '<p class="warn">강조 표시(*별표*) 일부가 빠진 채로 왔어요. 적용한 뒤 확인해 주세요.</p>' : ''}
@@ -93,7 +93,10 @@ export function wireProof(app: App): void {
     const r = results.get(w.id);
     if (!r) return;
     const go = el.closest<HTMLElement>('[data-go]');
-    if (go) { app.goCard(Number(go.dataset.go)); return; }
+    if (go) { app.goCard(Number(go.dataset.go), true); return; }
+    // touching a fix turns the preview beside to its card (the buttons below still act)
+    const item = el.closest<HTMLElement>('[data-card]');
+    if (item) app.showCard(Number(item.dataset.card));
     const fresh = !!w.review && w.review.sig === textSig(w);
     const one = el.closest<HTMLElement>('[data-apply]');
     if (one) {

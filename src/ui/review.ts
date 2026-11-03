@@ -36,10 +36,10 @@ export function renderReview(app: App): void {
         const card = w.cards[n.index];
         const applied = !!card && card.text === n.suggestion;
         return `
-        <div class="issue">
-          <div class="head"><button class="badge" type="button" data-go="${n.index}" title="이 카드로 가기">${num(n.index)}${n.index === 0 ? ' 표지' : ''}</button><span class="verdict ${n.verdict}">${n.verdict === 'cut' ? '바꾸기 권장' : '다듬기'}</span><span>${esc(n.issue)}</span></div>
-          ${n.suggestion ? `<div class="fix">${esc(n.suggestion)}</div>
-          <div class="toolbar"><button class="btn small ${applied ? '' : 'tonal'}" type="button" data-apply="${k}" ${applied ? 'disabled' : ''}>${applied ? '바꿨어요' : n.index === 0 ? '이 훅으로 바꾸기' : '이 문장으로 바꾸기'}</button></div>` : ''}
+        <div class="issue ${n.index === app.current() ? 'on' : ''}" data-card="${n.index}" title="누르면 옆 미리보기가 이 카드로 바뀌어요">
+          <div class="head"><button class="badge" type="button" data-show="${n.index}" title="옆 미리보기에서 이 카드 보기">${num(n.index)}${n.index === 0 ? ' 표지' : ''}</button><span class="verdict ${n.verdict}">${n.verdict === 'cut' ? '바꾸기 권장' : '다듬기'}</span><span>${esc(n.issue)}</span></div>
+          ${n.suggestion ? `<div class="fix">${esc(n.suggestion)}</div>` : ''}
+          <div class="toolbar"><button class="btn small" type="button" data-go="${n.index}">카드에서 고치기</button>${n.suggestion ? `<button class="btn small ${applied ? '' : 'tonal'}" type="button" data-apply="${k}" ${applied ? 'disabled' : ''}>${applied ? '바꿨어요' : n.index === 0 ? '이 훅으로 바꾸기' : '이 문장으로 바꾸기'}</button>` : ''}</div>
         </div>`;
       }).join('')}</div></div>` : ''}
       ${r.titles.length ? `<div><h3>제목·훅 후보</h3><div class="stack">${r.titles.map((x, k) => {
@@ -66,7 +66,7 @@ export function wireReview(app: App): void {
     const r = w.review;
     if (!r) return;
     const go = el.closest<HTMLElement>('[data-go]');
-    if (go) { app.goCard(Number(go.dataset.go)); return; }
+    if (go) { app.goCard(Number(go.dataset.go), true); return; }
     const apply = el.closest<HTMLElement>('[data-apply]');
     if (apply) {
       const n = r.notes[Number(apply.dataset.apply)];
@@ -76,7 +76,7 @@ export function wireReview(app: App): void {
       app.pushUndo();
       card.text = n.suggestion;
       keepFresh(app, fresh);
-      app.save(); app.refreshRow(n.index); app.scheduleRender(); renderReview(app);
+      app.save(); app.refreshRow(n.index); app.showCard(n.index); app.scheduleRender(); renderReview(app);
       app.undoToast(`${num(n.index)}번 카드를 바꿨어요.`);
       return;
     }
@@ -89,9 +89,13 @@ export function wireReview(app: App): void {
       w.cards[0].title = x.title;
       if (x.hook) w.cards[0].text = x.hook;
       keepFresh(app, fresh);
-      app.save(); app.refreshRow(0); app.scheduleRender(); renderReview(app);
+      app.save(); app.refreshRow(0); app.showCard(0); app.scheduleRender(); renderReview(app);
       app.undoToast('표지 제목과 훅을 바꿨어요.');
+      return;
     }
+    // anywhere else on a note: the preview beside turns to that card
+    const note = el.closest<HTMLElement>('[data-card]');
+    if (note && !el.closest('a, textarea, input')) app.showCard(Number(note.dataset.card));
   });
 }
 
