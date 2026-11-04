@@ -53,7 +53,16 @@ export const ONE_TEXT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['text'], properties: { text: str },
 };
 
-export const SYSTEM_WRITER = '당신은 인스타그램 카드소설을 만드는 한국어 작가이자 편집자입니다. 요청한 형식만 지키고, 설명 없이 결과만 냅니다.';
+/** For requests that must not restyle the writer's sentences (proofreading). */
+export const SYSTEM_BASE = '당신은 인스타그램 카드소설을 만드는 한국어 작가이자 편집자입니다. 요청한 형식만 지키고, 설명 없이 결과만 냅니다.';
+/** How the writing should read: like a person wrote it, without the stock phrases that give AI text away. */
+export const HUMAN_STYLE = `문장을 쓰거나 고칠 때는 사람이 쓴 글처럼 씁니다. AI가 쓴 티가 나는 기계식 표현을 쓰지 않습니다.
+- "첫째·둘째·셋째" 같은 기계식 번호 대신, 앞뒤 문맥으로 자연스럽게 이어 씁니다.
+- "결론적으로·요약하자면·정리하자면" 같은 끝맺음 공식 없이, 접속어를 빼고 핵심부터 바로 씁니다.
+- "시사하는 바가 크다" 같은 빈 평가 대신, 실제로 무엇이 달라지는지 구체적으로 씁니다.
+- "단순한 ~를 넘어", "새로운 패러다임" 같은 과장 어휘를 걷어내고 핵심 사실만 전합니다.
+- "~가 아니라 ~다" 대구를 되풀이하지 않고, 억지 대조 없이 담백한 평서문으로 흐르게 합니다.`;
+export const SYSTEM_WRITER = `${SYSTEM_BASE}\n\n${HUMAN_STYLE}`;
 
 const MODE_RULES: Record<Exclude<InputMode, 'auto'>, string> = {
   long: `입력은 완성된 원고입니다. 본문 ${BODY_COUNT}장 분량으로 압축·각색합니다.

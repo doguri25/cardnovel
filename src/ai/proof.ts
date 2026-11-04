@@ -3,6 +3,7 @@
 import { TOTAL_CARDS, type Work } from '../model';
 import { AiError } from './providers';
 import { askJSON, type TextAI } from './compose';
+import { SYSTEM_BASE } from './prompts';
 
 export type ProofTone = 'keep' | 'hada' | 'haeyo';
 export const PROOF_TONE_NAME: Record<ProofTone, string> = { keep: '말투 그대로', hada: '하다체로 통일', haeyo: '해요체로 통일' };
@@ -142,7 +143,8 @@ export function normalizeProof(raw: RawProof, w: Work, spots: ProofSpot[], tone:
 export async function proofWork(w: Work, ai: TextAI, tone: ProofTone, signal?: AbortSignal): Promise<ProofResult> {
   const spots = proofSpots(w);
   if (spots.filter((s) => s.field === 'text').length < 2) throw new AiError('bad_request', '교정할 글이 없어요. 카드를 먼저 채워 주세요');
-  const raw = await askJSON<RawProof>(ai, proofPrompt(spots, tone), PROOF_SCHEMA, signal, 12000, 'proof');
+  // spelling, spacing and punctuation only: without the style rules, so the writer's sentences stay theirs
+  const raw = await askJSON<RawProof>(ai, proofPrompt(spots, tone), PROOF_SCHEMA, signal, 12000, 'proof', SYSTEM_BASE);
   return normalizeProof(raw, w, spots, tone);
 }
 

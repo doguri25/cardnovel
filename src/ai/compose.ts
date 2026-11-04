@@ -19,8 +19,8 @@ interface ComposeAnswer {
 const s = (v: unknown) => (typeof v === 'string' ? v : '').replace(/\\n/g, '\n').trim();
 
 /** Retries once with a smaller output budget for models that do not accept 16k output tokens. */
-export async function askJSON<T>(ai: TextAI, prompt: string, schema: Record<string, unknown>, signal?: AbortSignal, maxTokens = 16000, tag: UsageTag = 'other'): Promise<T> {
-  const req = { ...ai, system: SYSTEM_WRITER, prompt, schema, signal, maxTokens, tag };
+export async function askJSON<T>(ai: TextAI, prompt: string, schema: Record<string, unknown>, signal?: AbortSignal, maxTokens = 16000, tag: UsageTag = 'other', system = SYSTEM_WRITER): Promise<T> {
+  const req = { ...ai, system, prompt, schema, signal, maxTokens, tag };
   try {
     return await generateJSON<T>(req);
   } catch (e) {

@@ -1,5 +1,6 @@
 // 게시 전 점검: what is worth fixing before the 20 cards go up — empty or overlong cards, stray emphasis marks,
 // missing pictures, a caption over Instagram's limits, proofreading left undone, a 9:16 feed post.
+import { aiToneHits } from './aitone';
 import { captionText } from './export';
 import { countChars, textSig, type Work } from './model';
 import { contrast, themeOfWork } from './themes';
@@ -55,6 +56,12 @@ export function precheck(w: Work, ctx: CheckContext = {}): CheckItem[] {
     if (seen.has(k)) dup.push(x.i); else seen.set(k, x.i);
   }
   if (dup.length) add({ id: 'dup', level: 'warn', text: `앞 카드와 글이 똑같은 카드가 있어요 (${cardList(dup)}).`, cards: dup, go: 'card' });
+  const tone = aiToneHits(w);
+  if (tone.length) {
+    const cards = [...new Set(tone.map((h) => h.where).filter((x): x is number => x !== 'caption'))];
+    const shown = tone.slice(0, 5).map((h) => `${h.where === 'caption' ? '캡션' : num(h.where)} 「${h.phrase}」`).join(', ') + (tone.length > 5 ? ` 외 ${tone.length - 5}곳` : '');
+    add({ id: 'aiTone', level: 'warn', text: `AI가 쓴 티가 나는 기계식 표현이 있어요: ${shown}. 접속어·과장·빈 평가는 빼고 담백하게 바꿔 보세요.`, ...(cards.length ? { cards, go: 'card' as const } : { go: 'caption' as const }) });
+  }
 
   if (finished) {
     add({ id: 'finished', level: 'info', text: 'Canva 마감본 그림으로 내보내요. 여기서 고친 글은 마감본에 들어가지 않아요.', go: 'look' });
