@@ -1,7 +1,11 @@
 // node --test desktop/update-core.test.js
 const test = require('node:test');
 const assert = require('node:assert');
-const { isNewer, parseVersion, installKind, releaseInfo, notesSummary } = require('./update-core.js');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { isNewer, parseVersion, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload } = require('./update-core.js');
 
 const url = (n) => `https://github.com/doguri25/cardnovel/releases/download/desktop-v0.3.1/${n}`;
 const manifest = {
@@ -42,4 +46,89 @@ test('picks the installer for this computer and its checksum', () => {
   assert.strictEqual(releaseInfo(manifest, 'deb', 'x64'), null, 'only downloads from this repository');
   assert.strictEqual(releaseInfo({ ...manifest, version: 'latest', tag: 'x' }, 'dmg', 'arm64'), null);
   assert.strictEqual(releaseInfo(null, 'dmg', 'arm64'), null);
+});
+
+/* ---------- downloads (Ubuntu's temp folder is the shared /tmp) ---------- */
+const posix = process.platform !== 'win32';
+const scratches = [];
+const scratch = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cardnovel-test-')); scratches.push(d); return d; };
+test.after(() => { for (const d of scratches) fs.rmSync(d, { recursive: true, force: true }); });
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+test('each download gets a new folder that only this user can open', () => {
+  const tmp = scratch();
+  // another account made the old fixed folder and put a link where the installer would go
+  fs.mkdirSync(path.join(tmp, 'cardnovel-update'), { mode: 0o777 });
+  fs.writeFileSync(path.join(tmp, 'other-users-file'), 'theirs');
+  if (posix) fs.symlinkSync(path.join(tmp, 'other-users-file'), path.join(tmp, 'cardnovel-update', 'CardNovel-0.3.4-linux-amd64.deb'));
+  const a = makeDownloadDir(tmp);
+  const b = makeDownloadDir(tmp);
+  assert.notStrictEqual(a, b);
+  for (const d of [a, b]) {
+    assert.strictEqual(path.dirname(d), tmp);
+    assert.match(path.basename(d), /^cardnovel-update-.{6}$/);
+    assert.deepStrictEqual(fs.readdirSync(d), []);
+    if (posix) assert.strictEqual(fs.statSync(d).mode & 0o777, 0o700);
+  }
+});
+
+test('saves a download that matches its checksum, readable only by this user', async () => {
+  const dir = makeDownloadDir(scratch());
+  const file = path.join(dir, 'CardNovel-0.3.4-linux-amd64.deb');
+  const seen = [];
+  const got = await saveChecked([Buffer.from('hello '), new Uint8Array(Buffer.from('world'))], file, { sha256: sha('hello world'), size: 11 }, (n) => seen.push(n));
+  assert.strictEqual(got, 11);
+  assert.deepStrictEqual(seen, [6, 11]);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'hello world');
+  if (posix) assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+});
+
+test('removes a download that does not match the release', async () => {
+  const dir = makeDownloadDir(scratch());
+  const file = path.join(dir, 'x.deb');
+  await assert.rejects(saveChecked([Buffer.from('changed')], file, { sha256: sha('hello world') }), /does not match/);
+  assert.strictEqual(fs.existsSync(file), false);
+  // without a checksum, the size is checked
+  await assert.rejects(saveChecked([Buffer.from('abc')], file, { size: 4 }), /does not match/);
+  assert.strictEqual(fs.existsSync(file), false);
+});
+
+test('never writes through a file or link that is already there', { skip: !posix && 'symlinks need rights on Windows' }, async () => {
+  const tmp = scratch();
+  const target = path.join(tmp, 'victim');
+  fs.writeFileSync(target, 'keep');
+  const link = path.join(tmp, 'x.deb');
+  fs.symlinkSync(target, link);
+  await assert.rejects(saveChecked([Buffer.from('new')], link, { sha256: sha('new') }), { code: 'EEXIST' });
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), 'keep');
+  assert.ok(fs.lstatSync(link).isSymbolicLink(), 'the link is left alone');
+  const plain = path.join(tmp, 'y.deb');
+  fs.writeFileSync(plain, 'old');
+  await assert.rejects(saveChecked([Buffer.from('new')], plain, { sha256: sha('new') }), { code: 'EEXIST' });
+  assert.strictEqual(fs.readFileSync(plain, 'utf8'), 'old');
+});
+
+test('a file that cannot be written or a broken download fails instead of crashing', async () => {
+  const dir = makeDownloadDir(scratch());
+  await assert.rejects(saveChecked([Buffer.from('x')], path.join(dir, 'missing', 'x.deb'), {}), { code: 'ENOENT' });
+  const file = path.join(dir, 'x.deb');
+  async function* broken() { yield Buffer.from('part'); throw new Error('connection lost'); }
+  await assert.rejects(saveChecked(broken(), file, { sha256: sha('part') }), /connection lost/);
+  assert.strictEqual(fs.existsSync(file), false, 'no half file is left');
+});
+
+test('removes only the folder it made for the download', () => {
+  const tmp = scratch();
+  const dir = makeDownloadDir(tmp);
+  fs.writeFileSync(path.join(dir, 'x.deb'), 'x');
+  fs.writeFileSync(path.join(dir, 'install.sh'), 'x');
+  removeDownload(path.join(dir, 'x.deb'));
+  assert.strictEqual(fs.existsSync(dir), false);
+  const other = path.join(tmp, 'Downloads');
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'x.deb'), 'x');
+  removeDownload(path.join(other, 'x.deb'));
+  removeDownload('x.deb');
+  removeDownload(undefined);
+  assert.strictEqual(fs.existsSync(path.join(other, 'x.deb')), true);
 });

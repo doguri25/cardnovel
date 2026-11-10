@@ -1,4 +1,8 @@
-// Pure helpers of the desktop updater (no Electron here, so they can be tested with `node --test`).
+// Helpers of the desktop updater (no Electron here, so they can be tested with `node --test`).
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { pipeline } = require('node:stream/promises');
 
 /** "desktop-v0.3.1" / "v0.3.1" / "0.3.1" → [0, 3, 1]; null when it is not a version. */
 function parseVersion(s) {
@@ -64,4 +68,49 @@ function notesSummary(body, max = 8) {
     .join('\n');
 }
 
-module.exports = { parseVersion, isNewer, installKind, releaseInfo, notesSummary };
+/**
+ * A new folder for one download that only this user can open (mode 0700, a name nobody can guess).
+ * On Ubuntu the temp folder is /tmp, which every account shares: a fixed folder there may belong to another
+ * account, which could then swap the installer after it was checked and before it is installed (as root, for a .deb).
+ */
+function makeDownloadDir(tempRoot) {
+  return fs.mkdtempSync(path.join(tempRoot, 'cardnovel-update-'));
+}
+
+/**
+ * Writes the downloaded chunks to a new file (never through a file or link that is already there) and checks it:
+ * the SHA-256 when the release gives one, otherwise the size. A failed or wrong download is removed and throws.
+ * `onChunk(bytesSoFar)` is called after each chunk, for the progress bar. Returns the number of bytes.
+ */
+async function saveChecked(chunks, file, expect = {}, onChunk) {
+  const handle = await fs.promises.open(file, 'wx', 0o600);
+  const hash = crypto.createHash('sha256');
+  let got = 0;
+  try {
+    await pipeline(async function* () {
+      for await (const value of chunks) {
+        hash.update(value);
+        got += value.length;
+        if (onChunk) onChunk(got);
+        yield value;
+      }
+    }, fs.createWriteStream(file, { fd: handle }));
+  } catch (e) {
+    fs.rmSync(file, { force: true });
+    throw e;
+  }
+  if (expect.sha256 ? hash.digest('hex') !== expect.sha256 : expect.size && got !== expect.size) {
+    fs.rmSync(file, { force: true });
+    throw new Error('the downloaded file does not match the release');
+  }
+  return got;
+}
+
+/** Removes the folder makeDownloadDir made for this file (and nothing else). */
+function removeDownload(file) {
+  const dir = path.dirname(String(file || ''));
+  if (!path.isAbsolute(dir) || !path.basename(dir).startsWith('cardnovel-update-')) return;
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* the temp folder is cleaned up later anyway */ }
+}
+
+module.exports = { parseVersion, isNewer, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload };

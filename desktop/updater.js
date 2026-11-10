@@ -9,7 +9,6 @@
 // Every download is checked against that SHA-256 before anything is installed.
 const { app, dialog, net, Notification, shell, BrowserWindow } = require('electron');
 const { spawn } = require('node:child_process');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const core = require('./update-core.js');
@@ -42,38 +41,41 @@ async function findUpdate() {
 
 const mainWindow = () => BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getParentWindow() === null) || null;
 
-/** Downloads the installer into the temp folder, showing progress on the taskbar / Dock, and checks its SHA-256. */
-async function download(info) {
-  const dir = path.join(app.getPath('temp'), 'cardnovel-update');
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, info.name);
-  const res = await net.fetch(info.url, { headers: { 'User-Agent': 'cardnovel-desktop' } });
-  if (!res.ok || !res.body) throw new Error(`download ${res.status}`);
-  const total = Number(res.headers.get('content-length')) || info.size || 0;
-  const hash = crypto.createHash('sha256');
-  const out = fs.createWriteStream(file);
-  const win = mainWindow();
-  let got = 0;
+/** The response body as chunks; stops the download when the rest is not needed (the file could not be written). */
+async function* bodyChunks(body) {
+  const reader = body.getReader();
   try {
-    const reader = res.body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
-      hash.update(value);
-      got += value.length;
-      if (!out.write(value)) await new Promise((r) => out.once('drain', r));
-      if (win && total) win.setProgressBar(Math.min(1, got / total));
+      if (done) return;
+      yield value;
     }
   } finally {
-    await new Promise((r) => out.end(r));
-    if (win) win.setProgressBar(-1);
+    reader.cancel().catch(() => {});
   }
-  const digest = hash.digest('hex');
-  if (info.sha256 ? digest !== info.sha256 : info.size && got !== info.size) {
-    fs.rmSync(file, { force: true });
-    throw new Error('the downloaded file does not match the release');
+}
+
+/**
+ * Downloads the installer into a new folder only this user can open, showing progress on the taskbar / Dock,
+ * and checks its SHA-256. The file stays there, unchanged, until it is installed.
+ */
+async function download(info) {
+  const file = path.join(core.makeDownloadDir(app.getPath('temp')), info.name);
+  const win = mainWindow();
+  try {
+    const res = await net.fetch(info.url, { headers: { 'User-Agent': 'cardnovel-desktop' } });
+    if (!res.ok || !res.body) throw new Error(`download ${res.status}`);
+    const total = Number(res.headers.get('content-length')) || info.size || 0;
+    try {
+      await core.saveChecked(bodyChunks(res.body), file, info, (got) => { if (win && total) win.setProgressBar(Math.min(1, got / total)); });
+    } finally {
+      if (win) win.setProgressBar(-1);
+    }
+    return file;
+  } catch (e) {
+    core.removeDownload(file);
+    throw e;
   }
-  return file;
 }
 
 /** The .app bundle this process runs from, when it may be replaced in place. */
@@ -95,7 +97,7 @@ if ! mv "$APP" "$APP.old"; then hdiutil detach "$MNT" -quiet; exit 1; fi
 if ditto "$NEW" "$APP"; then rm -rf "$APP.old"; else rm -rf "$APP"; mv "$APP.old" "$APP"; fi
 hdiutil detach "$MNT" -quiet
 xattr -cr "$APP" 2>/dev/null
-rm -f "$DMG"
+D=$(dirname "$DMG"); case "$(basename "$D")" in cardnovel-update-*) rm -rf "$D";; *) rm -f "$DMG";; esac
 if [ "$RELAUNCH" = "1" ]; then open "$APP"; fi
 `;
 
@@ -125,9 +127,13 @@ async function install(file, relaunch) {
   if (kind === 'appimage') {
     const target = process.env.APPIMAGE;
     const tmp = target + '.new';
-    fs.copyFileSync(file, tmp);
-    fs.chmodSync(tmp, 0o755);
-    fs.renameSync(tmp, target);
+    try {
+      fs.copyFileSync(file, tmp);
+      fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, target);
+    } finally {
+      core.removeDownload(file);
+    }
     if (relaunch) spawn(target, [], { detached: true, stdio: 'ignore' }).unref();
     app.quit();
     return true;
@@ -138,6 +144,7 @@ async function install(file, relaunch) {
       p.on('error', () => resolve(null));
       p.on('exit', (code) => resolve(code === 0));
     });
+    if (ok !== null) core.removeDownload(file);
     if (ok === null) { await shell.openPath(file); installing = false; return false; } // no pkexec: the system installer
     if (!ok) { installing = false; dialog.showMessageBox({ type: 'warning', message: '업데이트를 설치하지 못했어요.', detail: '나중에 다시 해 보거나, 릴리즈 페이지에서 받아 설치해 주세요.' }); return false; }
     if (relaunch) app.relaunch();
@@ -164,6 +171,7 @@ async function check(manual = false) {
     if (prefs.auto && !manual && kind !== 'deb') {
       // automatic: fetch it now, put it in place when the app closes
       const file = await download(info);
+      if (pending) core.removeDownload(pending.file); // an older version that was waiting
       pending = { version: info.version, file };
       if (Notification.isSupported()) new Notification({ title: '카드소설 제작소 업데이트', body: `${info.version} 버전을 받아 두었어요. 앱을 닫으면 바뀌어요.` }).show();
       return;
