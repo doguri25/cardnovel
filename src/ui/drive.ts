@@ -1,6 +1,6 @@
 // Drive section of the library: connect, back up this work or all works, restore from Drive, automatic backup.
 import type { App } from '../app';
-import { compareCopies, connect, connected, disconnect, downloadWork, driveMessage, DriveError, driveTime, findBackup, FOLDER_NAME, listBackups, loadGis, markSynced, planSync, syncedMap, uploadWork, type DriveFile, type SyncState } from '../drive';
+import { changedElsewhere, compareCopies, connect, connected, disconnect, downloadWork, driveMessage, DriveError, driveTime, findBackup, FOLDER_NAME, listBackups, loadGis, markSynced, planSync, syncedMap, uploadWork, type DriveFile, type SyncState } from '../drive';
 import { normalizeWork, workTitle, type Work, type WorkDefaults } from '../model';
 import { kv, works } from '../store';
 import { saveVersion } from '../versions';
@@ -14,12 +14,18 @@ void kv.get<boolean>('drive.auto', false).then((v) => { auto = v; });
 let continueAuto = true;
 void kv.get<boolean>('drive.continue', true).then((v) => { continueAuto = v; });
 
-/** Backs up one work; a newer copy on Drive (changed on another device) is not overwritten unless `force`. */
+/** Backs up one work; a Drive copy changed on another device since this device last agreed with it is not
+ *  overwritten unless `force`, whichever copy was saved later by the clock. */
 export async function backupOne(w: Work, force = false): Promise<'saved' | 'same' | 'conflict'> {
   const existing = await findBackup(w.id);
-  const state = existing ? compareCopies(existing, w) : 'drive_only';
-  if (existing && state === 'same') return 'same';
-  if (existing && state === 'drive_newer' && !force) return 'conflict';
+  if (existing) {
+    const synced = (await syncedMap())[w.id];
+    if (compareCopies(existing, w) === 'same') {
+      if (synced !== driveTime(existing)) await markSynced(w.id, driveTime(existing)); // the same on both sides: agreed
+      return 'same';
+    }
+    if (!force && changedElsewhere(existing, w, synced)) return 'conflict';
+  }
   await uploadWork(w, existing);
   await kv.set('drive.lastBackup', Date.now());
   return 'saved';
@@ -33,7 +39,7 @@ export function afterLocalSave(app: App): void {
   autoTimer = window.setTimeout(async () => {
     try {
       const r = await backupOne(app.work());
-      if (r === 'conflict') toast('드라이브에 더 최신 사본이 있어 자동 백업을 건너뛰었어요. 보관함에서 확인해 주세요.', 5000);
+      if (r === 'conflict') toast('드라이브 사본을 다른 기기에서 고친 듯해 자동 백업을 건너뛰었어요. 보관함에서 확인해 주세요.', 5000);
     } catch (e) {
       if (e instanceof DriveError && e.code === 'auth') toast('구글 드라이브 연결이 한 시간이 지나 끊겼어요. 보관함에서 다시 연결하면 자동 백업이 이어져요.', 5000);
     }
@@ -102,7 +108,7 @@ export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps,
       let r = await backupOne(app.work());
       if (r === 'conflict') {
         closeLibrary();
-        if (!(await confirmBox('드라이브 사본이 이 기기보다 최신이에요(다른 기기에서 고친 듯해요). 이 기기 것으로 덮어쓸까요?', { ok: '덮어쓰기', detail: ['드라이브 것을 보려면 취소하고 「드라이브에서 불러오기」를 쓰세요.'] }))) { deps.reopenLibrary(); return; }
+        if (!(await confirmBox('드라이브 사본이 이 기기 것과 달라요(다른 기기에서 고친 듯해요). 이 기기 것으로 덮어쓸까요?', { ok: '덮어쓰기', detail: ['드라이브 것을 보려면 취소하고 「드라이브에서 불러오기」를 쓰세요.'] }))) { deps.reopenLibrary(); return; }
         r = await backupOne(app.work(), true);
         toast('드라이브에 백업했어요.');
         deps.reopenLibrary();
@@ -118,18 +124,19 @@ export async function renderDriveBox(el: HTMLElement, app: App, deps: DriveDeps,
       const files = await listBackups();
       const byId = new Map(files.map((f) => [f.appProperties?.cardnovelId, f]));
       const all = await works.all();
+      const synced = await syncedMap();
       let saved = 0, same = 0, conflicts = 0;
       for (const [k, w] of all.entries()) {
         setStatus(st, `백업하는 중… ${k + 1}/${all.length}`, 'busy');
         const f = byId.get(w.id) ?? null;
         const state = f ? compareCopies(f, w) : 'drive_only';
-        if (f && state === 'same') { same++; continue; }
-        if (f && state === 'drive_newer') { conflicts++; continue; }
+        if (f && state === 'same') { same++; if (synced[w.id] !== driveTime(f)) await markSynced(w.id, driveTime(f)); continue; }
+        if (f && changedElsewhere(f, w, synced[w.id])) { conflicts++; continue; }
         await uploadWork(w, f);
         saved++;
       }
       await kv.set('drive.lastBackup', Date.now());
-      setStatus(st, `${saved}편을 백업했어요.${same ? ` ${same}편은 이미 최신이에요.` : ''}${conflicts ? ` ${conflicts}편은 드라이브 쪽이 더 최신이라 건너뛰었어요(불러오기에서 확인).` : ''}`);
+      setStatus(st, `${saved}편을 백업했어요.${same ? ` ${same}편은 이미 최신이에요.` : ''}${conflicts ? ` ${conflicts}편은 드라이브 사본을 다른 기기에서 고친 듯해 건너뛰었어요(불러오기에서 확인).` : ''}`);
     } catch (e) { fail(e); }
   });
   el.querySelector('[data-a="restore"]')!.addEventListener('click', async () => {
@@ -229,6 +236,7 @@ export async function syncCheck(app: App, deps: DriveDeps, quiet = false): Promi
     const [files, locals, synced] = await Promise.all([listBackups(), works.all(), syncedMap()]);
     const cur = app.work();
     const plan = planSync(files, locals, synced, cur.id);
+    for (const [id, t] of Object.entries(plan.agreed)) await markSynced(id, t);
     for (const f of plan.update) await takeDriveCopy(app, deps, f, false);
     if (plan.update.length) toast(`다른 기기에서 고친 작품 ${plan.update.length}편을 이 기기에 맞췄어요.`, 4500);
     const f = plan.currentFile;

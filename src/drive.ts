@@ -210,10 +210,19 @@ export const driveTime = (f: DriveFile): number => Number(f.appProperties?.updat
 /** What to do with one work: nothing, take Drive's copy, or ask (both sides changed, or never compared before). */
 export function decide(file: DriveFile | undefined, local: Pick<Work, 'updatedAt'>, syncedAt: number | undefined): 'none' | 'load' | 'ask' {
   if (!file) return 'none';
+  const d = driveTime(file), l = local.updatedAt || 0;
+  if (d === l) return 'none'; // the same copy on both sides
+  if (syncedAt === undefined) return d > l ? 'ask' : 'none';
+  if (d <= syncedAt) return 'none'; // Drive unchanged since the last sync
+  // Drive changed on another device: changed here too (even if this device saved later by the clock) is a conflict
+  return l > syncedAt ? 'ask' : 'load';
+}
+
+/** Drive's copy differs from this device's and from the copy both last agreed on (or they never agreed):
+ *  another device changed it, so backing up from here would replace those edits. */
+export function changedElsewhere(file: DriveFile, local: Pick<Work, 'updatedAt'>, syncedAt: number | undefined): boolean {
   const d = driveTime(file);
-  if (d <= (local.updatedAt || 0)) return 'none';
-  if (syncedAt === undefined || (local.updatedAt || 0) > syncedAt) return 'ask';
-  return 'load';
+  return d !== (local.updatedAt || 0) && d !== syncedAt;
 }
 
 export interface SyncPlan {
@@ -225,15 +234,19 @@ export interface SyncPlan {
   conflicts: DriveFile[];
   /** works that are on Drive but not on this device */
   onlyOnDrive: DriveFile[];
+  /** works whose two copies are the same but not yet recorded as agreed (id → save time): record them,
+   *  so a later backup from here is not taken for a conflict */
+  agreed: Record<string, number>;
 }
 export function planSync(files: DriveFile[], locals: Pick<Work, 'id' | 'updatedAt'>[], synced: Record<string, number>, currentId: string): SyncPlan {
   const byId = new Map(locals.map((w) => [w.id, w]));
-  const plan: SyncPlan = { current: 'none', update: [], conflicts: [], onlyOnDrive: [] };
+  const plan: SyncPlan = { current: 'none', update: [], conflicts: [], onlyOnDrive: [], agreed: {} };
   for (const f of files) {
     const id = f.appProperties?.cardnovelId;
     if (!id) continue;
     const local = byId.get(id);
     if (!local) { plan.onlyOnDrive.push(f); continue; }
+    if (driveTime(f) === (local.updatedAt || 0) && synced[id] !== driveTime(f)) plan.agreed[id] = driveTime(f);
     const d = decide(f, local, synced[id]);
     if (id === currentId) { plan.current = d; if (d !== 'none') plan.currentFile = f; continue; }
     if (d === 'load') plan.update.push(f); else if (d === 'ask') plan.conflicts.push(f);
