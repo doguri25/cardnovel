@@ -4,6 +4,9 @@
 const VERSION = __VERSION__;
 const SHELL = ['./', './index.html', './manifest.webmanifest', './fonts/maplestory-300.woff2', './fonts/maplestory-700.woff2', './icons/icon-192.png', ...__ASSETS__];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
+// this version's cache first: the previous version's cache is kept too (see activate), and caches.match alone
+// searches the caches oldest first, so it would answer with the previous deploy's copy of the shell or manifest
+const fromCache = (req) => caches.open(VERSION).then((c) => c.match(req, { ignoreVary: true })).then((hit) => hit || caches.match(req, { ignoreVary: true }));
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -37,7 +40,7 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => { const copy = res.clone(); caches.open(VERSION).then((c) => c.put('./index.html', copy)); return res; })
-        .catch(() => caches.match('./index.html', { ignoreVary: true })),
+        .catch(() => fromCache('./index.html')),
     );
     return;
   }
@@ -45,7 +48,7 @@ self.addEventListener('fetch', (e) => {
   // assets (hashed file names) and fonts: cache first, fill the cache on first use
   e.respondWith(
     // ignoreVary: module scripts and styles are requested with CORS (an Origin header) but were cached without one
-    caches.match(req, { ignoreVary: true }).then((hit) => hit || fetch(req).then((res) => {
+    fromCache(req).then((hit) => hit || fetch(req).then((res) => {
       if (res.ok || res.type === 'opaque') { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
       return res;
     })),

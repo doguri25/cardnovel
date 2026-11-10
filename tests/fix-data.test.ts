@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connect, decide, disconnect, planSync, syncedMap, type DriveFile } from '../src/drive';
 import { DEFAULTS, newPost, newWork, type Work } from '../src/model';
@@ -171,5 +172,52 @@ describe('device storage', () => {
     await expect(store.works.put({ ...w, caption: '너무 큼' })).rejects.toThrow();
     await expect(store.kv.set('currentId', w.id)).rejects.toThrow();
     localStorage.clear();
+  });
+});
+
+/* ---------- #19: offline, the service worker serves this version's app shell, not the previous one ---------- */
+describe('service worker offline shell', () => {
+  const ORIGIN = 'https://app.example';
+  type Listener = (e: unknown) => void;
+  function loadWorker(cacheOrder: [string, Record<string, string>][]) {
+    const key = (r: string | { url: string }) => new URL(typeof r === 'string' ? r : r.url, ORIGIN + '/sw.js').href;
+    const stores = new Map(cacheOrder.map(([name, files]) => [name, new Map(Object.entries(files).map(([p, body]) => [key(p), body]))]));
+    const caches = {
+      open: async (name: string) => {
+        if (!stores.has(name)) stores.set(name, new Map());
+        const m = stores.get(name)!;
+        return {
+          match: async (r: string | { url: string }) => (m.has(key(r)) ? new Response(m.get(key(r))) : undefined),
+          put: async (r: string | { url: string }, res: Response) => { m.set(key(r), await res.text()); },
+          addAll: async () => undefined,
+        };
+      },
+      // like CacheStorage.match: the caches in the order they were made
+      match: async (r: string | { url: string }) => { for (const m of stores.values()) if (m.has(key(r))) return new Response(m.get(key(r))); return undefined; },
+      keys: async () => [...stores.keys()],
+      delete: async (k: string) => stores.delete(k),
+    };
+    const listeners: Record<string, Listener> = {};
+    const self = { location: { origin: ORIGIN }, addEventListener: (t: string, f: Listener) => { listeners[t] = f; }, skipWaiting: () => undefined, clients: { claim: () => undefined } };
+    const src = readFileSync('sw/sw.template.js', 'utf8').replace('__VERSION__', JSON.stringify('cardnovel-new')).replace('__ASSETS__', '[]');
+    const offline = () => Promise.reject(new TypeError('offline'));
+    new Function('self', 'caches', 'fetch', src)(self, caches, offline);
+    const request = (path: string, mode: string) => {
+      let answer: Promise<Response> | undefined;
+      listeners.fetch({ request: { method: 'GET', url: ORIGIN + path, mode }, respondWith: (p: Promise<Response>) => { answer = p; } });
+      return answer!;
+    };
+    return { request };
+  }
+
+  it('answers an offline launch with the current version’s index.html', async () => {
+    const sw = loadWorker([
+      ['cardnovel-old', { './index.html': 'old shell', './manifest.webmanifest': 'old manifest', './assets/old.js': 'old code' }],
+      ['cardnovel-new', { './index.html': 'new shell', './manifest.webmanifest': 'new manifest' }],
+    ]);
+    expect(await (await sw.request('/', 'navigate')).text()).toBe('new shell');
+    expect(await (await sw.request('/manifest.webmanifest', 'same-origin')).text()).toBe('new manifest');
+    // a page still running the previous version finds its own parts in the cache kept for it
+    expect(await (await sw.request('/assets/old.js', 'cors')).text()).toBe('old code');
   });
 });
