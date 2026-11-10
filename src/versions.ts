@@ -19,7 +19,7 @@ export interface VersionMeta {
   /** cards with words / with pictures, for the list */
   texts: number;
   pics: number;
-  /** fingerprint of words and pictures: an unchanged work is not saved twice */
+  /** fingerprint of the whole work (pictures by hash): an unchanged work is not saved twice */
   sig: string;
 }
 interface VersionRec extends VersionMeta { work: Work; hashes: string[] }
@@ -94,13 +94,17 @@ export function attach(w: Work, blobs: Map<string, string>): Work {
   return out;
 }
 
-/** Words and picture fingerprints of a work (pictures by hash, so this is cheap to compare). */
-export function workSig(w: Work): string {
-  const pic = (s?: string) => (s ? (s.length < 2000 ? s : hashString(s)) : '');
-  const parts = w.cards.map((c) => [c.title, c.text, c.label, c.layout ?? '', pic(c.img), pic(c.svg)].join('\u0001'));
-  parts.push(w.outroKind, w.theme, w.ratio, w.font, w.series, w.handle, w.follow, String(w.episode ?? ''), pic(w.style.refImage), String(w.finished?.images.length ?? 0));
-  return hashString(parts.join('\u0002'));
+/** Object keys in a fixed order, so the same work always gives the same fingerprint. */
+const sortedKeys = (_k: string, v: unknown): unknown =>
+  v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v;
+/** Fingerprint of a detached work: everything the writer can change (caption, posts, style, card design too),
+ *  leaving out what changes by itself (save time, library thumbnail) and the ids. */
+function sigOf(detached: Work): string {
+  const { id: _id, createdAt: _c, updatedAt: _u, thumb: _t, ...rest } = detached;
+  return hashString(JSON.stringify({ ...rest, cards: rest.cards.map(({ id: _cid, ...c }) => c) }, sortedKeys));
 }
+/** Fingerprint of a whole work (pictures by hash, so this is cheap to compare). */
+export const workSig = (w: Work): string => sigOf(detach(w).work);
 
 /** How many cards differ (words or picture) between two works. */
 export function changedCards(a: Work, b: Work): number {
@@ -122,10 +126,10 @@ export async function listVersions(workId: string): Promise<VersionMeta[]> {
 
 /** Saves a version unless the work is unchanged since its latest version (manual saves always count). */
 export async function saveVersion(w: Work, reason: VersionReason, label?: string): Promise<VersionMeta | null> {
-  const sig = workSig(w);
+  const { work, blobs } = detach(w);
+  const sig = sigOf(work);
   const list = await listVersions(w.id);
   if (reason !== 'manual' && list[0]?.sig === sig) return null;
-  const { work, blobs } = detach(w);
   const meta: VersionMeta = {
     id: `${w.id}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
     workId: w.id, at: Date.now(), reason, ...(label ? { label } : {}),

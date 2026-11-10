@@ -1,10 +1,11 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connect, decide, disconnect, planSync, syncedMap, type DriveFile } from '../src/drive';
-import { DEFAULTS, newWork, type Work } from '../src/model';
+import { DEFAULTS, newPost, newWork, type Work } from '../src/model';
 import { kv, works } from '../src/store';
 import { backupOne, renderDriveBox } from '../src/ui/drive';
 import type { App } from '../src/app';
+import { deleteAllVersions, listVersions, saveVersion } from '../src/versions';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); disconnect(); });
 
@@ -96,5 +97,38 @@ describe('Drive conflicts', () => {
     await vi.waitFor(() => expect(st.textContent).toContain('1편을 백업했어요'));
     expect(st.textContent).toContain('1편은');
     expect(uploads).toEqual(['a2']);
+  });
+});
+
+/* ---------- #16: safety versions keep edits outside the words and pictures ---------- */
+describe('safety versions', () => {
+  it('are kept when only the caption, posts, style or card design changed', async () => {
+    const w = newWork(DEFAULTS);
+    w.cards[1].text = '밤 버스는 비어 있었다.';
+    expect(await saveVersion(w, 'timer')).not.toBeNull();
+    expect(await saveVersion({ ...w, updatedAt: w.updatedAt + 5, thumb: 'data:image/jpeg;base64,xx' }, 'timer')).toBeNull(); // nothing the writer changed
+    const edits: ((x: Work) => void)[] = [
+      (x) => { x.caption = '새 캡션'; },
+      (x) => { x.hashtags = ['#카드소설']; },
+      (x) => { x.posts = [newPost(1)]; },
+      (x) => { x.name = '막차 1화'; },
+      (x) => { x.style = { ...x.style, prompt: 'watercolor' }; },
+      (x) => { x.cards[2] = { ...x.cards[2], accent: true }; },
+      (x) => { x.cards[2] = { ...x.cards[2], textScale: 1.3 }; },
+    ];
+    for (const edit of edits) {
+      edit(w);
+      expect(await saveVersion(w, 'restore')).not.toBeNull();
+    }
+    expect(await listVersions(w.id)).toHaveLength(edits.length + 1);
+    await deleteAllVersions(w.id);
+  });
+  it('are kept when Canva sends different finished pictures of the same count', async () => {
+    const pic = (ch: string) => 'data:image/png;base64,' + ch.repeat(3000);
+    const w: Work = { ...newWork(DEFAULTS), finished: { designId: 'D', images: [pic('A'), pic('B')], at: 1, on: true } };
+    expect(await saveVersion(w, 'timer')).not.toBeNull();
+    w.finished = { ...w.finished!, images: [pic('C'), pic('D')] };
+    expect(await saveVersion(w, 'canva')).not.toBeNull();
+    await deleteAllVersions(w.id);
   });
 });
