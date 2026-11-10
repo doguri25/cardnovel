@@ -49,12 +49,21 @@ export const CANVA_STOP = ['not_connected', 'unavailable', 'server_not_configure
 
 const API = '/api/canva';
 
-export async function call(path: string, init?: RequestInit): Promise<Response> {
+/** The server's answer when it could not refresh the Canva token (api/_lib/canva.ts accessToken). */
+const SESSION_EXPIRED = 'Canva session expired';
+
+export async function call(path: string, init?: RequestInit, retried = false): Promise<Response> {
   let res: Response;
   try { res = await fetch(API + path, { credentials: 'same-origin', ...init }); } catch { throw new CanvaError(init?.signal?.aborted ? 'cancelled' : 'network'); }
   if (res.status === 404 || (res.headers.get('content-type') || '').includes('text/html')) throw new CanvaError('unavailable');
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    // refresh tokens work once: when requests side by side (Canva AI draws three at a time) refresh together, one wins
+    // and its new cookie is in the browser a moment later, so the others try once more before asking to reconnect
+    if (res.status === 401 && body.error === 'not_connected' && body.message === SESSION_EXPIRED && !retried && !init?.signal?.aborted) {
+      await new Promise((r) => setTimeout(r, 400));
+      return call(path, init, true);
+    }
     throw new CanvaError(body.error || `http_${res.status}`, body.message || '');
   }
   return res;

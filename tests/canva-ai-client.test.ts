@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CANVA_STOP, CanvaError, canvaAiImage, canvaAspect, canvaMessage, canvaUsage, pictureMessage } from '../src/canva';
+import { CANVA_STOP, CanvaError, call, canvaAiImage, canvaAspect, canvaMessage, canvaUsage, pictureMessage } from '../src/canva';
+import { canvaEditLink } from '../src/ui/finish';
 import { AiError } from '../src/ai/providers';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -115,5 +116,35 @@ describe('drawing with Canva AI', () => {
     expect(CANVA_STOP).toEqual(expect.arrayContaining(['ai_quota', 'ai_cooldown', 'ai_not_enabled', 'ai_forbidden', 'ai_scope', 'not_connected']));
     expect(CANVA_STOP).not.toContain('ai_failed');
     expect(CANVA_STOP).not.toContain('ai_unsafe');
+  });
+});
+
+describe('a refresh another request just used', () => {
+  it('tries once more when the server says the session expired: the winner\'s cookie is in the browser by then', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => (++n === 1 ? json({ error: 'not_connected', message: 'Canva session expired' }, 401) : json({ jobId: 'J1', status: 'pending' }))));
+    const res = await call('/ai-image', { method: 'POST', body: JSON.stringify({ prompt: 'x' }) });
+    expect(await res.json()).toEqual({ jobId: 'J1', status: 'pending' });
+    expect(n).toBe(2);
+  });
+  it('a plain sign-out, or the same answer twice, is not retried again', async () => {
+    let n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => { n++; return json({ error: 'not_connected' }, 401); }));
+    await expect(call('/status')).rejects.toMatchObject({ code: 'not_connected' });
+    expect(n).toBe(1);
+    n = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => { n++; return json({ error: 'not_connected', message: 'Canva session expired' }, 401); }));
+    await expect(call('/ai-image', { method: 'POST', body: '{}' })).rejects.toMatchObject({ code: 'not_connected' });
+    expect(n).toBe(2);
+  });
+});
+
+describe('the Canva edit link in 마감', () => {
+  it('opens only https links on canva.com', () => {
+    expect(canvaEditLink('https://www.canva.com/design/DA1/edit')).toBe('https://www.canva.com/design/DA1/edit');
+    expect(canvaEditLink('ms-msdt:/id PCWDiagnostic')).toBeNull();
+    expect(canvaEditLink('javascript:alert(1)')).toBeNull();
+    expect(canvaEditLink('https://canva.com.evil.example/x')).toBeNull();
+    expect(canvaEditLink(undefined)).toBeNull();
   });
 });

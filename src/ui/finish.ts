@@ -8,7 +8,7 @@ import { $, confirmBox, fmtDate, setStatus, toast } from './dom';
 export interface FinishDeps { login(): Promise<void>; refreshAll(): void }
 
 /** The design's edit address when it is a Canva page (https on canva.com); anything else from a work file is not linked. */
-function canvaEditLink(url: string | undefined): string | null {
+export function canvaEditLink(url: string | undefined): string | null {
   try {
     const u = new URL(url ?? '');
     return u.protocol === 'https:' && (u.hostname === 'canva.com' || u.hostname.endsWith('.canva.com')) ? u.href : null;
