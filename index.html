@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#9E2B3E">
+  <meta name="description" content="이야기를 넣으면 20장 카드소설로 만들어 주는 앱">
+  <title>카드소설 제작소</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Noto+Serif+KR:wght@400;700&family=Gowun+Batang:wght@400;700&family=Nanum+Myeongjo:wght@400;800&display=swap">
+</head>
+<body>
+<header class="appbar">
+  <div class="brand">
+    <h1>카드소설 제작소</h1>
+    <span class="tag" id="sizeTag">카드 20장 · 1080×1080</span>
+  </div>
+  <span class="saved" id="savedAt" aria-live="polite"></span>
+  <span class="offline-pill" id="offlinePill" hidden>오프라인</span>
+  <div class="spacer"></div>
+  <button class="btn icon m-only" id="btnMenu" type="button" aria-label="메뉴" aria-haspopup="dialog"><svg viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg></button>
+  <div class="actions">
+    <button class="btn kbd-btn" id="btnPalette" type="button" title="무엇이든 빨리 찾아 실행 (Ctrl+K · ⌘K)">빠른 실행<kbd>⌘K</kbd></button>
+    <button class="btn usage-pill" id="btnUsage" type="button" title="이번 달 AI 추정 비용">이번 달 $0</button>
+    <button class="btn" id="btnNewWork" type="button" title="지금 작품은 보관함에 저장되고 빈 작품이 열려요">새 작품</button>
+    <button class="btn" id="btnLibrary" type="button">보관함</button>
+    <button class="btn" id="btnSettings" type="button">설정</button>
+    <button class="btn" id="btnCaption" type="button">캡션 복사</button>
+    <button class="btn primary" id="btnSaveAll" type="button">전체 ZIP 저장</button>
+  </div>
+</header>
+
+<div class="sync-bar" id="syncBar" role="status" hidden></div>
+<div class="sync-bar update-bar" id="updateBar" role="status" hidden></div>
+<main class="workbench" id="workbench">
+  <section class="work-col">
+    <nav class="steps" id="stepNav" aria-label="작업 단계">
+      <button type="button" data-tab="story"><b>Ⅰ</b>이야기<small id="stStory"></small></button>
+      <button type="button" data-tab="cards"><b>Ⅱ</b>카드<small id="stCards"></small></button>
+      <button type="button" data-tab="review"><b>Ⅲ</b>다듬기<small id="stReview"></small></button>
+    </nav>
+
+    <div class="panel" id="storyPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅰ</span>이야기</h2>
+        <p class="hint">긴 원고, 짧은 줄거리, 이미 나눈 원고 모두 넣을 수 있어요.</p>
+      </div>
+      <div class="stack">
+        <div class="ai-row">
+          <select class="input" id="textProvider" aria-label="글 AI">
+            <option value="anthropic">Claude</option>
+            <option value="google">Gemini</option>
+            <option value="openai">GPT</option>
+          </select>
+          <select class="input" id="textModel" aria-label="글 AI 모델"></select>
+        </div>
+        <div class="field">
+          <label for="story">이야기</label>
+          <textarea class="input mono" id="story" rows="10" placeholder="원고나 줄거리를 붙여 넣으세요.
+
+이미 나눈 원고는 ‘표지 / 1페이지 … / 마지막 페이지’ 머리글을 쓰면 그대로 카드에 앉힙니다."></textarea>
+        </div>
+        <div class="mode-line">
+          <div class="seg" id="modeSeg" role="group" aria-label="입력 형태">
+            <button type="button" data-v="auto">자동</button>
+            <button type="button" data-v="long">긴 원고</button>
+            <button type="button" data-v="idea">줄거리</button>
+            <button type="button" data-v="split">나눈 원고</button>
+          </div>
+          <span class="hint" id="modeHint"></span>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="outroKind">마지막 장 덧붙임</label>
+            <select class="input" id="outroKind"></select>
+          </div>
+          <div class="field">
+            <label>마지막 장 고정 문구</label>
+            <p class="hint" id="outroFixedHint" style="padding-top:8px"></p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button class="btn primary" id="btnCompose" type="button">카드로 만들기</button>
+          <button class="btn" id="btnComposeStop" type="button" hidden>중단</button>
+          <button class="btn" id="btnExample" type="button">나눈 원고 형식 보기</button>
+          <span class="status" id="composeStatus"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="cardsPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅱ</span>카드 편집</h2>
+        <p class="hint">표지 1 · 본문 18 · 마지막 1. 본문은 공백 빼고 40~90자가 알맞습니다.</p>
+        <div class="toolbar"><label class="chk" title="배치·글자 크기·위치·머리말 같은 디자인 칸을 모든 카드에서 펼쳐 둡니다"><input type="checkbox" id="designAll"> 디자인 칸 모두 펼치기</label><button class="btn small" id="btnUndo" type="button" disabled>되돌리기</button><button class="btn small" id="btnVersions" type="button">버전 기록</button></div>
+      </div>
+      <div class="stylebox" id="styleBox">
+        <div>
+          <div class="name" id="styleName"></div>
+          <div class="desc" id="styleDesc"></div>
+        </div>
+        <select class="input" id="stylePreset" aria-label="그림체 바꾸기" style="width:auto"></select>
+        <div class="refbox">
+          <div class="refpic empty" id="refPic">없음</div>
+          <div class="refinfo">
+            <div class="name small">인물 기준 그림</div>
+            <div class="desc" id="refNote"></div>
+            <div class="picbtns">
+              <button class="btn tiny tonal" id="btnRefAI" type="button">AI로 만들기</button>
+              <button class="btn tiny" id="btnRefUpload" type="button">올리기</button>
+              <button class="btn tiny" id="btnRefCover" type="button">표지 그림 쓰기</button>
+              <button class="btn tiny" id="btnRefClear" type="button" hidden>지움</button>
+            </div>
+          </div>
+        </div>
+        <details>
+          <summary>그림체 자세히 고치기</summary>
+          <div class="stack">
+            <div class="field"><label for="stylePrompt">그림 지시문 (영어 권장)</label><textarea class="input" id="stylePrompt" rows="3"></textarea></div>
+            <div class="field"><label for="styleChars">등장인물 생김새 (모든 카드에 같게)</label><textarea class="input" id="styleChars" rows="2"></textarea></div>
+          </div>
+        </details>
+      </div>
+      <div class="toolbar art-bar" id="artBar" style="margin-bottom:12px">
+        <select class="input" id="imageProvider" aria-label="그림 AI" style="width:auto">
+          <option value="gemini">Gemini 이미지</option>
+          <option value="openai">GPT 이미지</option>
+          <option value="claude">Claude SVG</option>
+          <option value="canvaai">Canva AI (자동)</option>
+          <option value="canva">Canva (직접 그리기)</option>
+          <option value="upload">직접 올리기</option>
+        </select>
+        <select class="input" id="imageModel" aria-label="그림 모델" style="width:auto;max-width:220px"></select>
+        <button class="btn tonal" id="btnArtAll" type="button">모든 그림 그리기</button>
+        <button class="btn" id="btnArtStop" type="button" hidden>중단</button>
+        <span class="status" id="artStatus"></span>
+      </div>
+      <div class="m-card-bar" id="mCardBar">
+        <canvas id="mStage" width="540" height="540" aria-label="지금 카드 미리보기 (옆으로 밀어 넘기기)"></canvas>
+        <div class="m-pager"><button class="btn icon" id="mPrev" type="button" aria-label="이전 카드"><svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button><span id="mPagerText">1 / 20</span><button class="btn icon" id="mNext" type="button" aria-label="다음 카드"><svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg></button></div>
+      </div>
+      <div class="cards" id="cardList"></div>
+    </div>
+
+    <div class="panel" id="reviewPanel">
+      <div class="panel-head">
+        <h2><span class="step">Ⅲ</span>AI 평가</h2>
+        <p class="hint">흡입력 · 몰입 · 개연성 · 반전 · 여운, 각 20점. 고칠 카드는 바로 바꿀 수 있어요.</p>
+        <button class="btn small tonal" id="btnReview" type="button">평가 받기</button>
+      </div>
+      <span class="status" id="reviewStatus"></span>
+      <div id="reviewBody"></div>
+    </div>
+
+    <div class="panel" id="proofPanel">
+      <div class="panel-head">
+        <h2>일괄 교정</h2>
+        <p class="hint">맞춤법 · 띄어쓰기 · 문장부호를 20장 전체에서 한 번에. 고친 곳을 보고 골라서 적용해요.</p>
+        <div class="proof-ctl">
+          <label class="sr-only" for="proofTone">말투</label>
+          <select class="input small" id="proofTone">
+            <option value="keep">말투 그대로</option>
+            <option value="hada">하다체로 통일 (~했다)</option>
+            <option value="haeyo">해요체로 통일 (~했어요)</option>
+          </select>
+          <button class="btn small tonal" id="btnProof" type="button">교정하기</button>
+        </div>
+      </div>
+      <span class="status" id="proofStatus"></span>
+      <div id="proofBody"></div>
+    </div>
+
+  </section>
+
+  <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="구역 너비 조절" title="끌어서 너비 조절"></div>
+
+  <aside class="preview-col">
+    <div class="panel">
+      <div class="well">
+        <div class="stage"><canvas id="stage" width="1080" height="1080" aria-label="현재 카드 미리보기 (누르면 이 카드 글을 고칩니다)" title="누르면 이 카드 글을 고쳐요"></canvas></div>
+        <div class="pager">
+          <button class="btn icon" id="btnPrev" type="button" aria-label="이전 카드"><svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button>
+          <span id="pagerText">1 / 20</span>
+          <button class="btn icon" id="btnNext" type="button" aria-label="다음 카드"><svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg></button>
+        </div>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
+      <div class="seg side-nav" id="sideNav" role="tablist" aria-label="꾸미기와 내보내기"><button type="button" data-tab="look">꾸미기</button><button type="button" data-tab="export">내보내기<span class="badge" id="exportBadge" hidden></span></button></div>
+
+      <div class="stack look-fields" id="lookFields" style="margin-top:16px">
+        <div class="field">
+          <label>카드 비율</label>
+          <div class="seg release" id="ratioSeg" role="group" aria-label="카드 비율">
+            <button type="button" data-v="1:1">1:1</button>
+            <button type="button" data-v="4:5">4:5</button>
+            <button type="button" data-v="3:4">3:4</button>
+            <button type="button" data-v="9:16">9:16</button>
+          </div>
+          <p class="hint" id="ratioHint"></p>
+        </div>
+        <div class="field">
+          <label>카드 테마</label>
+          <div class="themes" id="themes"></div>
+          <div class="toolbar"><button class="btn small" id="btnThemeNew" type="button">+ 내 테마 만들기</button><button class="btn small" id="btnThemeEdit" type="button" hidden>이 테마 고치기</button></div>
+        </div>
+        <div class="field">
+          <label>로고 워터마크</label>
+          <div class="toolbar brand-line"><label class="chk"><input type="checkbox" id="brandOn"> 카드에 넣기</label><button class="btn small" id="btnBrand" type="button">꾸미기</button><span class="hint" id="brandHint"></span></div>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="font">서체</label>
+            <select class="input" id="font"></select>
+          </div>
+          <div class="field">
+            <label for="series">시리즈 이름 · 회차</label>
+            <div class="series-line">
+              <input class="input" id="series">
+              <input class="input" id="episode" type="number" min="1" max="999" inputmode="numeric" placeholder="회" aria-label="회차">
+            </div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button class="btn small" id="btnBible" type="button">설정집</button>
+          <button class="btn small" id="btnNextEpisode" type="button">이 시리즈 다음 회 만들기</button>
+          <span class="hint">회차를 넣으면 표지에 ‘시리즈 · N화’로 나와요.</span>
+        </div>
+        <div class="row two">
+          <div class="field">
+            <label for="handle">작가 핸들</label>
+            <input class="input" id="handle">
+          </div>
+          <div class="field">
+            <label for="follow">팔로우 문구</label>
+            <input class="input" id="follow">
+          </div>
+        </div>
+      </div>
+      <div class="export" id="exportBox">
+        <div class="precheck" id="precheckBox"></div>
+        <section class="ex-group">
+          <h3>저장</h3>
+          <div class="field">
+            <label for="exportFmt">이미지 형식</label>
+            <select class="input" id="exportFmt">
+              <option value="png">PNG (선명, 장당 1~2MB)</option>
+              <option value="jpg">JPG (가벼움, 인스타 권장)</option>
+            </select>
+          </div>
+          <div class="ex-row"><button class="btn primary" id="btnSaveAllM" type="button">전체 ZIP 저장</button><button class="btn" id="btnSaveOne" type="button">이 카드만 저장</button></div>
+        </section>
+        <section class="ex-group">
+          <h3>올리기</h3>
+          <button class="btn tonal" id="btnShare" type="button">인스타로 공유 (20장)</button>
+          <div class="ex-row"><button class="btn" id="btnCaptionHelp" type="button">캡션 · 해시태그</button><button class="btn" id="btnInsta" type="button">인스타 미리보기</button></div>
+          <div class="ex-row"><button class="btn" id="btnReels" type="button">릴스 영상 만들기</button><button class="btn" id="btnShareLink" type="button">공유 링크 만들기</button></div>
+          <button class="btn link-more" id="btnShareList" type="button">만든 공유 링크 목록</button>
+        </section>
+        <section class="ex-group">
+          <h3>마감 · 기록</h3>
+          <div class="finish-box" id="finishBox"></div>
+          <button class="btn" id="btnPosts" type="button">게시 기록 · 성과</button>
+        </section>
+        <section class="ex-group">
+          <h3>다음 작품</h3>
+          <p class="hint next-hint">지금 작품은 자동 저장돼 보관함에 남아요.</p>
+          <div class="ex-row" id="nextWorkRow"><button class="btn primary" id="btnNewWorkEx" type="button">새 작품 시작</button><button class="btn" id="btnNextEpisodeEx" type="button">이 시리즈 다음 회</button></div>
+        </section>
+        <p class="note" id="saveNote">「전체 ZIP 저장」은 20장을 01~20 순서로 한 파일에 담아요. 폰에서는 「인스타로 공유」로 20장을 한 게시물에 올릴 수 있어요. 「공유 링크」는 인스타 없이도 넘겨 읽는 웹 페이지 주소를 만들어요.</p>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<nav class="m-tabs" id="mTabs" aria-label="작업 단계">
+  <button type="button" data-tab="story"><svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5zm9 1.5V8h3.5zM7 11h10v1.6H7zm0 3.4h10V16H7zm0 3.4h7v1.6H7z"/></svg>이야기</button>
+  <button type="button" data-tab="cards"><svg viewBox="0 0 24 24"><path d="M4 5h12v14H4zm14 2h2v12a2 2 0 0 1-2 2H8v-2h10z"/></svg>카드</button>
+  <button type="button" data-tab="look"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.5-1.1a1.6 1.6 0 0 1 1.2-2.7H16a5 5 0 0 0 5-5c0-4.3-4-7.6-9-7.6zM6.5 12a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>꾸미기</button>
+  <button type="button" data-tab="review"><svg viewBox="0 0 24 24"><path d="m12 17.3-6.2 3.7 1.6-7L2 9.2l7.1-.6L12 2l2.9 6.6 7.1.6-5.4 4.8 1.6 7z"/></svg>다듬기</button>
+  <button type="button" data-tab="export"><svg viewBox="0 0 24 24"><path d="M12 3 7 8l1.4 1.4L11 6.8V15h2V6.8l2.6 2.6L17 8zM5 17h14v3H5z"/></svg>내보내기</button>
+</nav>
+<div class="toast" id="toast" role="status"></div>
+<div class="modal" id="modal" hidden><div class="box" id="modalBox"></div></div>
+<input type="file" id="fileInput" accept="image/*" hidden>
+<input type="file" id="libFile" accept="application/json,.json" hidden>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

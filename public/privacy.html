@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>카드소설 제작소 — 개인정보처리방침</title>
+<meta name="description" content="카드소설 제작소 개인정보처리방침">
+<link rel="icon" href="./icons/icon-192.png">
+<style>
+:root { --bg:#F5F6FA; --surface:#fff; --text:#1A1C23; --muted:#5F6577; --line:#DFE3EC; --primary:#9E2B3E; }
+@media (prefers-color-scheme: dark) { :root { --bg:#121419; --surface:#1B1E26; --text:#E8EAF1; --muted:#9AA1B4; --line:#313644; --primary:#E37A8B; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.75 "Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif; }
+main { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
+header { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+header img { width:44px; height:44px; border-radius:10px; }
+header a { color:inherit; text-decoration:none; font-weight:700; font-size:18px; }
+h1 { font-size:28px; line-height:1.35; margin:0 0 8px; }
+h2 { font-size:19px; margin:32px 0 8px; }
+h3 { font-size:16px; margin:20px 0 4px; }
+p, li { margin:6px 0; }
+.lead { color:var(--muted); }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin:16px 0; }
+a { color:var(--primary); }
+.btn { display:inline-block; background:var(--primary); color:#fff; border-radius:20px; padding:10px 20px; text-decoration:none; font-weight:700; }
+nav.links { display:flex; gap:16px; flex-wrap:wrap; margin-top:36px; padding-top:16px; border-top:1px solid var(--line); font-size:14px; }
+.en { margin-top:40px; padding-top:16px; border-top:1px dashed var(--line); color:var(--muted); font-size:14px; }
+code { font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+<header><img src="./icons/icon-192.png" alt=""><a href="./about.html">카드소설 제작소</a></header>
+<h1>개인정보처리방침</h1>
+<p class="lead">시행일: 2026년 11월 2일 · 대상: 카드소설 제작소 웹앱(https://cardnovel.vercel.app)과 데스크톱 앱</p>
+
+<h2>1. 한눈에</h2>
+<ul>
+<li>회원 가입이 없고, 광고·방문 추적·분석 도구를 쓰지 않아요.</li>
+<li>작품, 설정, AI API 키는 지금 쓰는 브라우저(기기) 안에만 저장돼요.</li>
+<li>구글 드라이브는 내가 연결했을 때만, 이 앱이 만든 파일만 다뤄요. 드라이브 데이터는 이 앱의 서버로 오지 않아요.</li>
+</ul>
+
+<h2>2. 기기에 저장하는 정보</h2>
+<p>작품(카드 글과 그림), 설정(시리즈 이름·핸들 등), AI API 키, 사용량 기록, 버전 기록, 휴지통은 브라우저 저장소(IndexedDB · localStorage)에 저장돼요. 브라우저의 사이트 데이터를 지우면 함께 지워지고, 우리는 이 정보에 접근할 수 없어요.</p>
+
+<h2>3. 구글 드라이브 (선택)</h2>
+<ul>
+<li><b>요청하는 권한:</b> <code>https://www.googleapis.com/auth/drive.file</code> 하나뿐이에요. 이 앱이 만들거나 사용자가 이 앱으로 연 파일만 다룰 수 있어요.</li>
+<li><b>하는 일:</b> 드라이브에 「카드소설 제작소」 폴더를 만들고, 작품마다 백업 파일(<code>.cardnovel.json</code>, 카드 글과 그림 포함)을 저장·갱신하며, 그 파일들의 목록과 내용을 읽어 다른 기기에서 이어서 열거나 되살려요.</li>
+<li><b>처리 위치:</b> 백업 파일과 구글 접근 토큰은 사용자의 브라우저와 구글 사이에서만 오가요. 이 앱의 서버로 보내거나 저장하지 않고, 누구와도 공유하거나 판매하지 않으며, 광고나 AI 학습에 쓰지 않아요.</li>
+<li><b>토큰 보관:</b> 접근 토큰은 브라우저 탭의 임시 저장소(sessionStorage)에만 약 1시간 두고, 탭을 닫으면 사라져요.</li>
+<li><b>권한 해제:</b> 앱 보관함의 「연결 끊기」나 <a href="https://myaccount.google.com/permissions" rel="noopener">구글 계정 → 서드파티 액세스</a>에서 언제든 해제할 수 있어요. 드라이브의 백업 파일은 사용자가 직접 지울 수 있어요.</li>
+</ul>
+<p>카드소설 제작소의 Google API 사용 및 Google API에서 받은 정보의 다른 앱으로의 전송은 제한적 사용(Limited Use) 요구사항을 포함한 <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API 서비스 사용자 데이터 정책</a>을 준수합니다.</p>
+
+<h2>4. AI 회사로 보내는 정보</h2>
+<p>AI 기능(카드 구성, 다시 쓰기, 평가, 교정, 그림, 낭독, 캡션 제안 등)을 쓰면, 그에 필요한 글·그림을 사용자가 넣은 API 키로 브라우저에서 Anthropic(Claude), Google(Gemini), OpenAI(GPT)에 바로 보내요. 이 앱의 서버를 거치지 않으며, 각 회사의 약관과 개인정보 정책이 적용돼요.</p>
+
+<h2>5. Canva (선택)</h2>
+<p>Canva를 연결하면 Canva 로그인 정보(토큰)는 암호화되어 사용자 브라우저의 쿠키(HttpOnly)에 저장되고, 이 앱의 서버 함수(Vercel)가 사용자의 요청을 Canva로 전달해요. 그릴 그림이나 마감할 카드는 사용자가 요청할 때만 Canva로 보내요. 「Canva에서 마감하기」는 카드 파일(PPTX)을 Vercel Blob 저장소에 잠시 올려 Canva가 가져가게 하고, 가져간 뒤 바로 지워요. 연결은 앱에서 언제든 끊을 수 있어요.</p>
+
+<h2>6. 공유 링크 (선택)</h2>
+<p>「공유 링크 만들기」를 누르면 그 작품의 카드 이미지와 글이 Vercel Blob 저장소에 올라가, 링크를 아는 누구나 볼 수 있어요. 공유 링크는 앱의 「링크 목록」에서 지울 수 있어요.</p>
+
+<h2>7. 서비스 운영 기록</h2>
+<p>앱은 Vercel에서 호스팅되며, Vercel은 서비스 운영을 위해 일반적인 접속 기록(IP 주소, 시각, 요청 주소 등)을 남길 수 있어요(<a href="https://vercel.com/legal/privacy-policy" rel="noopener">Vercel 개인정보 처리방침</a>). 글꼴은 Google Fonts에서 불러오고(<a href="https://policies.google.com/privacy" rel="noopener">Google 개인정보처리방침</a>), 데스크톱 앱은 업데이트 확인을 위해 GitHub 릴리즈 정보를 내려받아요.</p>
+
+<h2>8. 아동</h2>
+<p>이 앱은 만 14세 미만 아동을 대상으로 하지 않으며, 아동의 개인정보를 일부러 수집하지 않아요.</p>
+
+<h2>9. 바뀔 때</h2>
+<p>이 방침이 바뀌면 이 페이지에 시행일과 함께 알려요.</p>
+
+<h2>10. 문의</h2>
+<p><a href="https://github.com/doguri25" rel="noopener">GitHub (doguri25)</a> 또는 구글 로그인 화면에 표시되는 개발자 연락처로 문의해 주세요.</p>
+
+<section class="en">
+<h2>Privacy Policy (English summary)</h2>
+<p>Effective November 2, 2026. Card Novel Studio has no accounts, ads, analytics or tracking. Works, settings and AI API keys are stored only in the user's browser (IndexedDB/localStorage).</p>
+<p><b>Google Drive (optional).</b> The app requests only <code>https://www.googleapis.com/auth/drive.file</code>. It creates a "카드소설 제작소" folder and creates, updates, lists and reads only the backup files it created, so the user can restore and continue works on other devices. Drive data and Google access tokens travel only between the user's browser and Google; they are not sent to or stored on our servers, are not shared with or sold to third parties, and are not used for advertising or to train AI models. Access tokens are kept in the tab's sessionStorage for about one hour. Users can revoke access at any time at https://myaccount.google.com/permissions.</p>
+<p>Card Novel Studio's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+<p><b>AI providers.</b> When the user uses AI features, the needed text and images are sent from the browser directly to Anthropic, Google or OpenAI with the user's own key. <b>Canva</b> (optional): Canva tokens are kept encrypted in an HttpOnly cookie in the user's browser and our serverless functions forward the user's requests to Canva; the finishing deck (PPTX) is briefly stored in Vercel Blob for Canva to import and deleted right after. <b>Share links</b> (optional): card images and text are uploaded to Vercel Blob and visible to anyone with the link until deleted. Hosting provider Vercel may keep standard request logs; fonts are loaded from Google Fonts.</p>
+<p>Contact: <a href="https://github.com/doguri25" rel="noopener">github.com/doguri25</a>.</p>
+</section>
+<nav class="links"><a href="./">앱 열기</a><a href="./about.html">앱 소개</a><a href="./privacy.html">개인정보처리방침</a><a href="./terms.html">이용약관</a><a href="https://github.com/doguri25" rel="noopener">문의 (GitHub)</a></nav>
+</main>
+</body>
+</html>

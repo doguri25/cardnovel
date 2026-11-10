@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>카드소설 제작소 — 앱 소개</title>
+<meta name="description" content="이야기를 넣으면 인스타그램용 20장 카드소설로 만들어 주는 웹앱">
+<link rel="icon" href="./icons/icon-192.png">
+<style>
+:root { --bg:#F5F6FA; --surface:#fff; --text:#1A1C23; --muted:#5F6577; --line:#DFE3EC; --primary:#9E2B3E; }
+@media (prefers-color-scheme: dark) { :root { --bg:#121419; --surface:#1B1E26; --text:#E8EAF1; --muted:#9AA1B4; --line:#313644; --primary:#E37A8B; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.75 "Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif; }
+main { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
+header { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+header img { width:44px; height:44px; border-radius:10px; }
+header a { color:inherit; text-decoration:none; font-weight:700; font-size:18px; }
+h1 { font-size:28px; line-height:1.35; margin:0 0 8px; }
+h2 { font-size:19px; margin:32px 0 8px; }
+h3 { font-size:16px; margin:20px 0 4px; }
+p, li { margin:6px 0; }
+.lead { color:var(--muted); }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin:16px 0; }
+a { color:var(--primary); }
+.btn { display:inline-block; background:var(--primary); color:#fff; border-radius:20px; padding:10px 20px; text-decoration:none; font-weight:700; }
+nav.links { display:flex; gap:16px; flex-wrap:wrap; margin-top:36px; padding-top:16px; border-top:1px solid var(--line); font-size:14px; }
+.en { margin-top:40px; padding-top:16px; border-top:1px dashed var(--line); color:var(--muted); font-size:14px; }
+code { font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+<header><img src="./icons/icon-192.png" alt=""><a href="./about.html">카드소설 제작소</a></header>
+<h1>이야기를 넣으면, 인스타그램 카드소설 20장으로</h1>
+<p class="lead">카드소설 제작소는 원고나 줄거리를 표지 1장 · 본문 18장 · 마지막 1장의 인스타그램 카드 이미지로 만들어 주는 웹앱이에요. 브라우저에서 바로 쓰고, 설치형(macOS · Windows · Ubuntu)도 있어요.</p>
+<p><a class="btn" href="./">앱 열기</a></p>
+
+<div class="card">
+<h2 style="margin-top:0">할 수 있는 것</h2>
+<ul>
+<li>원고·줄거리를 20장 카드로 나누고 다듬기 (Claude · Gemini · GPT 중 고른 AI가 도와요)</li>
+<li>카드마다 그림 그리기 (Gemini · GPT 이미지, Claude SVG, Canva, 직접 올리기)</li>
+<li>테마·서체·비율·워터마크 꾸미기, AI 평가와 일괄 교정</li>
+<li>PNG/JPG·ZIP 저장, 인스타 공유, 릴스 영상(AI 낭독), 공유 링크, 게시 기록과 성과 보기</li>
+<li>구글 드라이브에 작품 백업하고 다른 기기에서 이어서 열기 (선택)</li>
+</ul>
+</div>
+
+<div class="card">
+<h2 style="margin-top:0">구글 드라이브를 쓰는 방법</h2>
+<p>「보관함 → 드라이브 연결」을 누르면 구글 로그인 창에서 <b>이 앱이 만든 파일만</b> 다루는 권한(<code>drive.file</code>)을 요청해요. 허용하면 내 드라이브에 「카드소설 제작소」 폴더를 만들고 작품마다 파일 하나로 백업하며, 이 파일들만 다시 읽어 와요. 드라이브의 다른 파일은 볼 수도 바꿀 수도 없어요.</p>
+<p>백업 파일과 로그인 권한은 내 브라우저와 내 드라이브 사이에서만 오가고, 이 앱의 서버로 보내지 않아요. 자세한 내용은 <a href="./privacy.html">개인정보처리방침</a>을 보세요.</p>
+</div>
+
+<div class="card">
+<h2 style="margin-top:0">내 정보는 내 기기에</h2>
+<p>작품, 설정, AI API 키는 모두 지금 쓰는 브라우저 안에만 저장돼요. 회원 가입이 없고, 광고나 방문 추적도 없어요. AI 기능은 내가 넣은 키로 각 AI 회사에 바로 요청해요.</p>
+</div>
+
+<section class="en">
+<h2>About Card Novel Studio (English)</h2>
+<p>Card Novel Studio is a free web app that turns a story into a 20-card Instagram carousel (cover, 18 body cards, closing card), with optional AI writing help and illustrations using the user's own AI provider keys.</p>
+<p>Google Drive is optional and used only to back up and restore the user's own works. The app requests the <code>https://www.googleapis.com/auth/drive.file</code> scope, creates a "카드소설 제작소" folder, and reads and writes only the files it created. Drive data and access tokens stay between the user's browser and Google; they are never sent to our servers or shared with anyone. See the <a href="./privacy.html">privacy policy</a>.</p>
+</section>
+<nav class="links"><a href="./">앱 열기</a><a href="./about.html">앱 소개</a><a href="./privacy.html">개인정보처리방침</a><a href="./terms.html">이용약관</a><a href="https://github.com/doguri25" rel="noopener">문의 (GitHub)</a></nav>
+</main>
+</body>
+</html>

@@ -1,0 +1,114 @@
+{
+  "name": "cardnovel-desktop",
+  "productName": "카드소설 제작소",
+  "version": "0.3.4",
+  "description": "이야기를 넣으면 20장 카드소설로 만들어 주는 앱 (데스크톱)",
+  "author": "doguri25 <doguri25@users.noreply.github.com>",
+  "homepage": "https://cardnovel.vercel.app",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "dist": "electron-builder --publish never",
+    "test": "node --test update-core.test.js"
+  },
+  "build": {
+    "appId": "app.vercel.cardnovel",
+    "productName": "CardNovel",
+    "artifactName": "CardNovel-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "updater.js",
+      "update-core.js",
+      "offline.html",
+      "build/icon.png"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "카드소설 제작소"
+      }
+    },
+    "dmg": {
+      "title": "카드소설 제작소"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "카드소설 제작소",
+      "uninstallDisplayName": "카드소설 제작소"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "cardnovel",
+      "category": "Office",
+      "synopsis": "이야기를 넣으면 20장 카드소설로 만들어 주는 앱",
+      "description": "원고나 줄거리를 인스타그램용 20장 카드소설로 나누고, 카드마다 그림을 그려 이미지로 내보내는 앱",
+      "maintainer": "도구리 <doguri25@users.noreply.github.com>",
+      "vendor": "도구리",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "카드소설 제작소",
+          "GenericName": "카드소설 만들기",
+          "Keywords": "카드소설;인스타그램;소설;웹소설;card;novel;instagram;"
+        }
+      }
+    },
+    "deb": {
+      "fpm": [
+        "build/linux/app.vercel.cardnovel.metainfo.xml=/usr/share/metainfo/app.vercel.cardnovel.metainfo.xml"
+      ]
+    },
+    "publish": null
+  },
+  "devDependencies": {
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doguri25/cardnovel.git"
+  },
+  "desktopName": "cardnovel.desktop"
+}

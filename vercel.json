@@ -1,0 +1,35 @@
+{
+  "functions": {
+    "api/canva.ts": {
+      "maxDuration": 60
+    },
+    "api/share.ts": {
+      "maxDuration": 30
+    }
+  },
+  "headers": [
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/s/:id",
+      "destination": "/api/share?action=page&id=:id"
+    },
+    {
+      "source": "/api/canva/:action",
+      "destination": "/api/canva?action=:action"
+    },
+    {
+      "source": "/api/share/:action",
+      "destination": "/api/share?action=:action"
+    }
+  ]
+}

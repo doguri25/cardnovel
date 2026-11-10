@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Software centres (Ubuntu App Center, GNOME Software, KDE Discover) read this for the publisher and description. -->
+<component type="desktop-application">
+  <id>app.vercel.cardnovel</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>카드소설 제작소</name>
+  <summary>이야기를 넣으면 인스타그램용 20장 카드소설로 만들어 주는 앱</summary>
+  <developer id="app.vercel.cardnovel">
+    <name>도구리</name>
+  </developer>
+  <developer_name>도구리</developer_name>
+  <description>
+    <p>긴 원고나 짧은 줄거리를 넣으면 표지 1장, 본문 18장, 마지막 1장의 인스타그램 카드소설로 나눠 주고, 카드마다 그림을 그려 1080×1080·4:5·9:16 이미지로 내보냅니다.</p>
+    <ul>
+      <li>Claude·Gemini·GPT로 이야기를 카드에 맞게 압축·각색하고, 평가·일괄 교정·캡션까지 돕습니다.</li>
+      <li>Gemini·GPT·Claude·Canva AI로 카드 그림을 그리고, 그림체와 인물 생김새를 맞춥니다.</li>
+      <li>시리즈 회차 관리, 릴스 영상, 공유 링크, 구글 드라이브 백업을 지원합니다.</li>
+    </ul>
+    <p>앱은 https://cardnovel.vercel.app 을 띄우므로 웹이 바뀌면 자동으로 최신이 됩니다.</p>
+  </description>
+  <launchable type="desktop-id">cardnovel.desktop</launchable>
+  <url type="homepage">https://cardnovel.vercel.app</url>
+  <url type="bugtracker">https://github.com/doguri25/cardnovel/issues</url>
+  <categories>
+    <category>Office</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>
