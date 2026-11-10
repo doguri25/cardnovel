@@ -1,4 +1,5 @@
 // Saving cards: one image, all 20 in a ZIP, or handed to another app (Instagram) through the share sheet.
+import { busy } from './busy';
 import { stripMarks, type Work } from './model';
 import { cardHeight, ensureFonts, renderCard, W } from './render';
 
@@ -65,20 +66,25 @@ export function download(blob: Blob, name: string): void {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
-export async function renderAll(w: Work, fmt: ImgFormat, onProgress?: (n: number) => void): Promise<File[]> {
-  const out: File[] = [];
-  for (let i = 0; i < w.cards.length; i++) {
-    const b = await renderToBlob(w, i, fmt);
-    out.push(new File([b], cardFileName(w, i, fmt), { type: b.type }));
-    onProgress?.(i + 1);
-  }
-  return out;
+// these run for a while: a background update waits for them (see busy.ts)
+export function renderAll(w: Work, fmt: ImgFormat, onProgress?: (n: number) => void): Promise<File[]> {
+  return busy(async () => {
+    const out: File[] = [];
+    for (let i = 0; i < w.cards.length; i++) {
+      const b = await renderToBlob(w, i, fmt);
+      out.push(new File([b], cardFileName(w, i, fmt), { type: b.type }));
+      onProgress?.(i + 1);
+    }
+    return out;
+  });
 }
 
-export async function zipAll(w: Work, fmt: ImgFormat, onProgress?: (n: number) => void): Promise<Blob> {
-  const files = await renderAll(w, fmt, onProgress);
-  const data = await Promise.all(files.map(async (f) => ({ name: f.name, data: new Uint8Array(await f.arrayBuffer()) })));
-  return makeZip(data);
+export function zipAll(w: Work, fmt: ImgFormat, onProgress?: (n: number) => void): Promise<Blob> {
+  return busy(async () => {
+    const files = await renderAll(w, fmt, onProgress);
+    const data = await Promise.all(files.map(async (f) => ({ name: f.name, data: new Uint8Array(await f.arrayBuffer()) })));
+    return makeZip(data);
+  });
 }
 
 export function captionText(w: Work): string {
@@ -94,7 +100,7 @@ export const canShareFiles = (files: File[]): boolean => {
 /** Hands the 20 JPEG cards to the phone's share sheet (pick Instagram there). */
 export async function shareCards(files: File[], text: string): Promise<'shared' | 'cancelled' | 'unsupported'> {
   if (!canShareFiles(files)) return 'unsupported';
-  try { await navigator.share({ files, text }); return 'shared'; } catch (e) {
+  try { await busy(() => navigator.share({ files, text })); return 'shared'; } catch (e) {
     return (e as DOMException)?.name === 'AbortError' ? 'cancelled' : 'unsupported';
   }
 }

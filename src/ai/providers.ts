@@ -6,6 +6,8 @@ export type AiErrorCode =
   | 'too_large' | 'invalid_json' | 'empty' | 'network' | 'upstream' | 'cancelled' | 'bad_request';
 
 export class AiError extends Error {
+  /** the account has no credit left (OpenAI insufficient_quota): waiting and trying again does not help */
+  quota = false;
   constructor(public code: AiErrorCode, message = '', public status = 0) { super(message || code); }
 }
 
@@ -65,12 +67,20 @@ function classify(status: number, body: unknown): AiError {
   const type = (b?.error?.type || b?.error?.status || b?.error?.code || '').toString();
   if (status === 401 || /authentication|API key not valid|invalid_api_key|API_KEY_INVALID/i.test(msg + type)) return new AiError('invalid_key', msg, status);
   if (status === 403 || /PERMISSION_DENIED|permission/i.test(type)) return new AiError('forbidden', msg, status);
-  if (status === 429 || /rate_limit|RESOURCE_EXHAUSTED|insufficient_quota/i.test(type)) return new AiError('rate_limited', msg, status);
+  if (status === 429 || /rate_limit|RESOURCE_EXHAUSTED|insufficient_quota/i.test(type)) {
+    const err = new AiError('rate_limited', msg, status);
+    // OpenAI names it in the error's type and code; the message is written for people and does not say it
+    err.quota = /insufficient_quota/i.test(`${type} ${b?.error?.code ?? ''} ${msg}`);
+    return err;
+  }
   if (status === 529 || /overloaded/i.test(type)) return new AiError('overloaded', msg, status);
   if (status === 413 || /too long|too large|maximum context|context length|prompt is too long/i.test(msg)) return new AiError('too_large', msg, status);
   if (status >= 500) return new AiError('upstream', msg, status);
   return new AiError('bad_request', msg, status);
 }
+
+/** busy or briefly unreachable servers are worth another try; an account out of credit is not */
+const retryable = (err: AiError) => ['rate_limited', 'overloaded', 'upstream'].includes(err.code) && !err.quota;
 
 /** fetch with retries for busy servers (429, 5xx), cancellable. */
 async function call(url: string, init: RequestInit, signal?: AbortSignal, retries = 2): Promise<unknown> {
@@ -88,8 +98,7 @@ async function call(url: string, init: RequestInit, signal?: AbortSignal, retrie
     try { body = text ? JSON.parse(text) : null; } catch { body = { error: { message: text.slice(0, 300) } }; }
     if (res.ok) return body;
     const err = classify(res.status, body);
-    const retryable = ['rate_limited', 'overloaded', 'upstream'].includes(err.code) && !/insufficient_quota/i.test(err.message);
-    if (retryable && attempt < retries) {
+    if (retryable(err) && attempt < retries) {
       const ra = Number(res.headers.get('retry-after'));
       await sleep(ra > 0 && ra < 30 ? ra * 1000 : 2000 * (attempt + 1) ** 2, signal);
       continue;
@@ -420,7 +429,7 @@ async function callBinary(url: string, init: RequestInit, signal?: AbortSignal, 
     let body: unknown;
     try { body = text ? JSON.parse(text) : null; } catch { body = { error: { message: text.slice(0, 300) } }; }
     const err = classify(res.status, body);
-    if (['rate_limited', 'overloaded', 'upstream'].includes(err.code) && !/insufficient_quota/i.test(err.message) && attempt < retries) {
+    if (retryable(err) && attempt < retries) {
       const ra = Number(res.headers.get('retry-after'));
       await sleep(ra > 0 && ra < 30 ? ra * 1000 : 2000 * (attempt + 1) ** 2, signal);
       continue;

@@ -65,12 +65,21 @@ export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; top?
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
-  const onBackdrop = (e: MouseEvent) => { if (e.target === modal) close(); };
+  // a click whose press began inside the box and ended over the backdrop (selecting text in a field, say)
+  // is sent to the backdrop too: close only when the press also began there
+  let pressedBackdrop = false;
+  const onPress = (e: Event) => { pressedBackdrop = e.target === modal; };
+  const onBackdrop = (e: MouseEvent) => {
+    const fromBackdrop = pressedBackdrop;
+    pressedBackdrop = false;
+    if (e.target === modal && fromBackdrop) close();
+  };
   const close: Closer = () => {
     modal.hidden = true;
     modal.classList.remove('at-top');
     box.innerHTML = '';
     document.removeEventListener('keydown', onKey);
+    modal.removeEventListener('pointerdown', onPress);
     modal.removeEventListener('click', onBackdrop);
     if (closeCurrent === close) closeCurrent = null;
     opts.onClose?.();
@@ -78,6 +87,7 @@ export function openModal(html: string, opts: { size?: '' | 'mid' | 'wide'; top?
     if (!closeCurrent && opener && document.contains(opener)) { try { opener.focus({ preventScroll: true }); } catch { /* fine */ } }
   };
   document.addEventListener('keydown', onKey);
+  modal.addEventListener('pointerdown', onPress);
   modal.addEventListener('click', onBackdrop);
   closeCurrent = close;
   opts.wire?.(box, close);

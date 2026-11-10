@@ -1,5 +1,6 @@
 // 일괄 교정: spelling, spacing and punctuation across all 20 cards (and the caption) in one call,
 // optionally unifying the narration's speech level. Only fixes; the story and its wording stay the writer's.
+import { diffWords } from '../diff';
 import { TOTAL_CARDS, type Work } from '../model';
 import { AiError } from './providers';
 import { askJSON, type TextAI } from './compose';
@@ -96,18 +97,44 @@ const t = (v: unknown) => (typeof v === 'string' ? v.replace(/\\n/g, '\n').trim(
 const MARK = /\*([^*\n]+)\*/g;
 const marksOf = (s: string) => [...s.matchAll(MARK)].map((m) => m[1]);
 
-/** Puts back *emphasis* marks the AI dropped, where the marked words are still there. */
-export function keepMarks(orig: string, fixed: string): { text: string; lost: boolean } {
-  const want = marksOf(orig);
-  if (!want.length || marksOf(fixed).length === want.length) return { text: fixed, lost: false };
-  let plain = fixed.replace(MARK, '$1'), from = 0, lost = false;
-  for (const w of want) {
-    const at = plain.indexOf(w, from);
-    if (at < 0) { lost = true; continue; }
-    plain = plain.slice(0, at) + `*${w}*` + plain.slice(at + w.length);
-    from = at + w.length + 2;
+/** Where offset `at` of text `a` lands in text `b`, following the word diff (inside a changed stretch: where its new words begin). */
+function mapOffset(a: string, b: string, at: number): number {
+  let i = 0, j = 0;
+  for (const p of diffWords(a, b)) {
+    if (p.op === 'ins') { j += p.text.length; continue; }
+    if (at < i + p.text.length) return p.op === 'eq' ? j + (at - i) : j;
+    i += p.text.length;
+    if (p.op === 'eq') j += p.text.length;
   }
-  return { text: plain, lost };
+  return j;
+}
+
+/** Puts back *emphasis* marks the AI dropped, where the marked words are still there. Each mark goes on the copy of
+ *  its word nearest to where it was; `lost` also when two copies are equally near and it cannot tell which was meant. */
+export function keepMarks(orig: string, fixed: string): { text: string; lost: boolean } {
+  const want = [...orig.matchAll(MARK)];
+  if (!want.length || marksOf(fixed).length === want.length) return { text: fixed, lost: false };
+  const origPlain = orig.replace(MARK, '$1'), plain = fixed.replace(MARK, '$1');
+  const placed: [number, number][] = [];
+  let from = 0, lost = false;
+  want.forEach((m, k) => {
+    const word = m[1];
+    const near = mapOffset(origPlain, plain, m.index! - 2 * k); // its place without the marks before it
+    const spots: number[] = [];
+    for (let at = plain.indexOf(word); at >= 0; at = plain.indexOf(word, at + 1)) {
+      if (!placed.some(([s, e]) => at < e && at + word.length > s)) spots.push(at);
+    }
+    if (!spots.length) { lost = true; return; }
+    const best = Math.min(...spots.map((at) => Math.abs(at - near)));
+    const tied = spots.filter((at) => Math.abs(at - near) === best);
+    if (tied.length > 1) lost = true;
+    const at = tied.find((s) => s >= from) ?? tied[0];
+    placed.push([at, at + word.length]);
+    from = at + word.length;
+  });
+  let text = plain;
+  for (const [s, e] of [...placed].sort((x, y) => y[0] - x[0])) text = `${text.slice(0, s)}*${text.slice(s, e)}*${text.slice(e)}`;
+  return { text, lost };
 }
 
 interface RawProof { fixes?: { id?: string; corrected?: string; changes?: { kind?: string; from?: string; to?: string }[] }[]; summary?: string }

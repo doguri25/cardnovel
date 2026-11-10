@@ -1,6 +1,7 @@
 // Web app updates: every deploy ships a new service worker. When it takes over, the open page still runs the
 // old code, so: show a bar to switch now, and switch by itself when the tab is in the background and idle.
 import type { App } from '../app';
+import { isBusy } from '../busy';
 import { esc } from './dom';
 
 const CHECK_EVERY = 30 * 60_000;
@@ -34,8 +35,8 @@ export function watchForUpdates(app: App, reg: ServiceWorkerRegistration, idle: 
   setInterval(check, CHECK_EVERY);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && Date.now() - last > 5 * 60_000) check();
-    // switch quietly while the writer is elsewhere and nothing is running
-    if (document.hidden && ready && idle()) void apply(app);
+    // switch quietly while the writer is elsewhere and nothing is running (an AI review, proofreading, an upload or export)
+    if (document.hidden && ready && idle() && !isBusy()) void apply(app);
   });
 }
 

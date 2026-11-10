@@ -1,4 +1,5 @@
 // Share links (browser side): upload the 20 cards as JPEGs, then the manifest; the server returns https://…/s/<id>.
+import { startBusy } from './busy';
 import { captionText, renderToBlob } from './export';
 import { seriesLine, stripMarks, workTitle, type Work } from './model';
 import { kv } from './store';
@@ -42,31 +43,56 @@ export const newShareId = (): string => {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => a[b % a.length]).join('');
 };
 
-/** Renders and uploads the 20 cards (three at a time), then publishes the manifest. */
+/** Renders and uploads the 20 cards (three at a time), then publishes the manifest.
+ *  The first failed upload stops the others, and what was already uploaded is removed again (best effort). */
 export async function createShare(w: Work, key: string, onProgress: (done: number) => void, signal?: AbortSignal): Promise<ShareRecord> {
   if (!key) throw new ShareError('no_key');
   const id = newShareId();
   const urls: string[] = new Array(w.cards.length);
+  const stop = new AbortController();
+  const cancel = () => stop.abort();
+  if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
   let next = 0, done = 0;
+  let failure = null as { e: unknown } | null;
   const worker = async () => {
-    while (next < w.cards.length) {
-      if (signal?.aborted) throw new ShareError('cancelled');
-      const i = next++;
-      const blob = await renderToBlob(w, i, 'jpg');
-      const r = await api<{ url: string }>(`upload?id=${id}&n=${i + 1}`, key, { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, signal });
-      urls[i] = r.url;
-      onProgress(++done);
+    try {
+      while (!stop.signal.aborted && next < w.cards.length) {
+        const i = next++;
+        const blob = await renderToBlob(w, i, 'jpg');
+        if (stop.signal.aborted) break;
+        const r = await api<{ url: string }>(`upload?id=${id}&n=${i + 1}`, key, { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: blob, signal: stop.signal });
+        urls[i] = r.url;
+        if (!stop.signal.aborted) onProgress(++done);
+      }
+    } catch (e) {
+      // the first error is the one to report; the others come from the uploads it stopped
+      failure ??= { e };
+      stop.abort();
     }
   };
-  await Promise.all([worker(), worker(), worker()]);
-  const cover = w.cards[0];
-  const r = await api<{ id: string; url: string }>('create', key, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, signal,
-    body: JSON.stringify({ id, title: workTitle(w), hook: stripMarks(cover.text), caption: captionText(w), handle: w.handle, series: seriesLine(w), ratio: w.ratio, images: urls }),
-  });
-  const rec: ShareRecord = { id: r.id, url: r.url, title: workTitle(w), workId: w.id, createdAt: Date.now(), cover: w.thumb };
-  await kv.set('shares', [rec, ...(await listShares())].slice(0, 200));
-  return rec;
+  const endBusy = startBusy(); // a background update waits for this
+  let made = false;
+  try {
+    await Promise.all([worker(), worker(), worker()]);
+    if (signal?.aborted) throw new ShareError('cancelled');
+    if (failure) throw failure.e;
+    const cover = w.cards[0];
+    const r = await api<{ id: string; url: string }>('create', key, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, signal,
+      body: JSON.stringify({ id, title: workTitle(w), hook: stripMarks(cover.text), caption: captionText(w), handle: w.handle, series: seriesLine(w), ratio: w.ratio, images: urls }),
+    });
+    made = true;
+    const rec: ShareRecord = { id: r.id, url: r.url, title: workTitle(w), workId: w.id, createdAt: Date.now(), cover: w.thumb };
+    await kv.set('shares', [rec, ...(await listShares())].slice(0, 200));
+    return rec;
+  } catch (e) {
+    // no link was made: take the pictures that did go up off the server again
+    if (!made) void deleteShare(id, key).catch(() => undefined);
+    throw e;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    endBusy();
+  }
 }
 
 export async function deleteShare(id: string, key: string): Promise<void> {

@@ -84,7 +84,7 @@ export function normalizeReview(raw: RawReview, w: Work, at = Date.now()): Revie
     const issue = t(n.issue), suggestion = t(n.suggestion);
     if (!issue && !suggestion) continue;
     seen.add(index);
-    notes.push({ index, verdict: n.verdict === 'cut' ? 'cut' : 'fix', issue, suggestion });
+    notes.push({ index, verdict: n.verdict === 'cut' ? 'cut' : 'fix', issue, suggestion, ...(w.cards[index]?.id ? { cardId: w.cards[index].id } : {}) });
     if (notes.length >= 6) break;
   }
   notes.sort((a, b) => a.index - b.index);
@@ -99,7 +99,7 @@ export function normalizeReview(raw: RawReview, w: Work, at = Date.now()): Revie
   };
 }
 
-export const totalScore = (r: Review): number => AXES.reduce((n, a) => n + (r.scores[a] || 0), 0);
+export const totalScore = (r: Review): number => AXES.reduce((n, a) => n + (Number(r.scores?.[a]) || 0), 0);
 
 export async function reviewWork(w: Work, ai: TextAI, signal?: AbortSignal, history = ''): Promise<Review> {
   const body = w.cards.filter((c) => c.kind === 'body' && c.text.trim()).length;

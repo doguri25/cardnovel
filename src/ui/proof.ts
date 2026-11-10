@@ -3,6 +3,7 @@
 import type { App } from '../app';
 import { aiMessage, type AiError } from '../ai/providers';
 import { applyProof, PROOF_KIND_NAME, proofWork, spotValue, type ProofItem, type ProofResult, type ProofTone } from '../ai/proof';
+import { startBusy } from '../busy';
 import { diffWords, changeCount } from '../diff';
 import { textSig } from '../model';
 import { $, esc, fmtDate, setStatus, toast } from './dom';
@@ -139,6 +140,7 @@ async function run(app: App) {
   ctl = new AbortController();
   renderProof(app);
   setStatus(st, '20장을 읽으며 고칠 곳을 찾는 중… (보통 20~40초)', 'busy');
+  const done = startBusy(); // a background update waits for this
   try {
     const r = await proofWork(w, ai, tone, ctl.signal);
     results.set(w.id, r);
@@ -148,6 +150,7 @@ async function run(app: App) {
     setStatus(st, aiMessage(e), (e as AiError)?.code === 'cancelled' ? '' : 'error');
   } finally {
     ctl = null;
+    done();
     renderProof(app);
   }
 }

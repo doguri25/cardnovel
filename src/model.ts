@@ -101,7 +101,11 @@ export interface ArtStyle {
 
 export type ReviewAxis = 'hook' | 'flow' | 'consistency' | 'turn' | 'ending';
 export const REVIEW_AXES: Record<ReviewAxis, string> = { hook: '첫 장 흡입력', flow: '몰입·리듬', consistency: '개연성', turn: '반전·전환', ending: '결말 여운' };
-export interface ReviewNote { index: number; verdict: 'good' | 'fix' | 'cut'; issue: string; suggestion: string }
+export interface ReviewNote {
+  index: number; verdict: 'good' | 'fix' | 'cut'; issue: string; suggestion: string;
+  /** the card the note is about, to find it after cards are moved (reviews saved before this have none) */
+  cardId?: string;
+}
 export interface Review {
   at: number;
   /** card texts the review was written for, to tell when it no longer matches */
@@ -278,6 +282,35 @@ export function newWork(d: WorkDefaults): Work {
   };
 }
 
+/** A review read from storage or a file: only numbers, known words and strings, so none of it can turn into markup. */
+function cleanReview(raw: unknown): Review | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? v as Record<string, unknown> : {});
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const num = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  const scores = Object.fromEntries((Object.keys(REVIEW_AXES) as ReviewAxis[]).map((a) => [a, Math.max(0, Math.min(20, Math.round(num(obj(r.scores)[a]))))])) as Record<ReviewAxis, number>;
+  const notes: ReviewNote[] = [];
+  for (const x of list(r.notes)) {
+    const n = obj(x);
+    const index = Number(n.index);
+    if (!Number.isInteger(index) || index < 0 || index >= TOTAL_CARDS - 1) continue;
+    notes.push({ index, verdict: n.verdict === 'cut' ? 'cut' : 'fix', issue: str(n.issue), suggestion: str(n.suggestion), ...(typeof n.cardId === 'string' && n.cardId ? { cardId: n.cardId } : {}) });
+  }
+  const history = Math.round(num(r.history));
+  return {
+    at: num(r.at),
+    sig: str(r.sig),
+    scores,
+    summary: str(r.summary),
+    strengths: list(r.strengths).filter((s): s is string => typeof s === 'string'),
+    notes,
+    titles: list(r.titles).map((x) => { const t = obj(x); return { title: str(t.title), hook: str(t.hook), why: str(t.why) }; }).filter((t) => t.title),
+    ...(history > 0 ? { history } : {}),
+  };
+}
+
 /** Keeps a work loaded from storage or a file in the shape the app expects (20 cards: cover, 18 body, outro). */
 export function normalizeWork(w: Omit<Partial<Work>, 'cards'> & { cards?: Partial<Card>[] }, d: WorkDefaults): Work {
   const base = newWork(d);
@@ -293,6 +326,12 @@ export function normalizeWork(w: Omit<Partial<Work>, 'cards'> & { cards?: Partia
   if (!out.style || typeof out.style !== 'object') out.style = presetStyle('night');
   if (!Array.isArray(out.hashtags)) out.hashtags = [];
   if (!out.source) out.source = { mode: 'auto', text: '' };
+  const review = cleanReview(w.review);
+  if (review) {
+    // a review from before notes kept their card: while the cards are as reviewed, each note's place says which card it is
+    if (review.sig === textSig(out)) for (const n of review.notes) n.cardId ??= out.cards[n.index].id;
+    out.review = review;
+  } else delete out.review;
   return out;
 }
 
