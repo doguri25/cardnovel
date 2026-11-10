@@ -1,4 +1,4 @@
-// Helpers of the desktop updater (no Electron here, so they can be tested with `node --test`).
+// Helpers of the desktop shell and its updater (no Electron here, so they can be tested with `node --test`).
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -113,4 +113,13 @@ function removeDownload(file) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* the temp folder is cleaned up later anyway */ }
 }
 
-module.exports = { parseVersion, isNewer, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload };
+/** Links the app may hand to the system (the default browser or mail app). Other schemes would start other apps. */
+function isWebLink(url) {
+  try {
+    return ['https:', 'http:', 'mailto:'].includes(new URL(String(url)).protocol);
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { parseVersion, isNewer, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload, isWebLink };

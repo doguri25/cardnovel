@@ -7,6 +7,16 @@ import { $, confirmBox, fmtDate, setStatus, toast } from './dom';
 
 export interface FinishDeps { login(): Promise<void>; refreshAll(): void }
 
+/** The design's edit address when it is a Canva page (https on canva.com); anything else from a work file is not linked. */
+function canvaEditLink(url: string | undefined): string | null {
+  try {
+    const u = new URL(url ?? '');
+    return u.protocol === 'https:' && (u.hostname === 'canva.com' || u.hostname.endsWith('.canva.com')) ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function renderFinishBox(app: App): void {
   const w = app.work();
   const f = w.finished;
@@ -18,11 +28,12 @@ export function renderFinishBox(app: App): void {
     return;
   }
   const has = f.images.length > 0;
+  const editUrl = canvaEditLink(f.editUrl);
   box.innerHTML = `
     <div class="finish-line"><b>Canva 마감본</b><span class="hint">${has ? `${f.images.length}장 · ${fmtDate(f.at)}` : 'Canva에서 편집 중 · 다 고치면 돌아가기(Return)를 누르세요'}</span></div>
     ${has ? `<label class="chk"><input type="checkbox" data-fa="toggle" ${f.on ? 'checked' : ''}> 저장·공유·영상에 마감본 쓰기</label>` : ''}
     <div class="toolbar">
-      ${f.editUrl ? '<a class="btn small" data-fa="open" target="_blank" rel="noopener" href="' + f.editUrl.replace(/"/g, '&quot;') + '">Canva에서 열기</a>' : ''}
+      ${editUrl ? '<a class="btn small" data-fa="open" target="_blank" rel="noopener" href="' + editUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '">Canva에서 열기</a>' : ''}
       <button class="btn small ${has ? '' : 'tonal'}" type="button" data-fa="pull">${has ? '다시 가져오기' : '마감본 가져오기'}</button>
       <button class="btn small" type="button" data-fa="send">새로 보내기</button>
       <button class="btn small" type="button" data-fa="drop">지우기</button>

@@ -2,7 +2,7 @@
 // It shows the deployed web app, so the desktop version updates itself with the website and keeps
 // Canva working (same origin, same cookies). Canva's editor and sign-in open in app windows, so
 // "Return" lands back in this app's own storage, not in a separate browser.
-const { app, BrowserWindow, Menu, screen, shell } = require('electron');
+const { app, BrowserWindow, Menu, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -11,6 +11,7 @@ const APP_ORIGIN = new URL(APP_URL).origin;
 const SMOKE = process.argv.includes('--smoke-test');
 const UPDATE_DRY_RUN = process.argv.includes('--update-check-only');
 const updater = require('./updater.js');
+const { isWebLink } = require('./update-core.js');
 
 // Hosts that may open inside the app: the app itself, Canva, and the sign-in pages Canva sends people to.
 const IN_APP_HOSTS = [/\.canva\.com$/, /^canva\.com$/, /^accounts\.google\.com$/, /^appleid\.apple\.com$/, /\.facebook\.com$/, /^login\.microsoftonline\.com$/];
@@ -35,7 +36,8 @@ if (!gotLock) app.quit();
 let mainWindow = null;
 
 function guard(win) {
-  // links to other sites open in the default browser; the app, Canva and sign-in stay in app windows
+  // links to other sites open in the default browser; the app, Canva and sign-in stay in app windows.
+  // Only web and mail links leave the app: any other scheme (file:, smb:, ms-msdt:, ...) would start another program.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (inApp(url)) {
       return {
@@ -43,11 +45,11 @@ function guard(win) {
         overrideBrowserWindowOptions: { width: 1280, height: 860, autoHideMenuBar: true, webPreferences: secureWebPreferences() },
       };
     }
-    shell.openExternal(url);
+    if (isWebLink(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
-    if (!inApp(url)) { e.preventDefault(); shell.openExternal(url); }
+    if (!inApp(url)) { e.preventDefault(); if (isWebLink(url)) shell.openExternal(url); }
   });
 }
 app.on('browser-window-created', (_e, win) => guard(win));
@@ -169,6 +171,11 @@ app.whenReady().then(async () => {
     return;
   }
   if (!gotLock) return;
+  // A frame inside a page (a Canva iframe, say) that goes to another scheme asks to start a program for it;
+  // allow that only for web and mail links. Every other permission keeps Electron's default (allowed).
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    callback(permission !== 'openExternal' || isWebLink(details && details.externalURL));
+  });
   buildMenu();
   createWindow();
   if (!SMOKE) updater.startAutoUpdate();

@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { isNewer, parseVersion, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload } = require('./update-core.js');
+const { isNewer, parseVersion, installKind, releaseInfo, notesSummary, makeDownloadDir, saveChecked, removeDownload, isWebLink } = require('./update-core.js');
 
 const url = (n) => `https://github.com/doguri25/cardnovel/releases/download/desktop-v0.3.1/${n}`;
 const manifest = {
@@ -131,4 +131,12 @@ test('removes only the folder it made for the download', () => {
   removeDownload('x.deb');
   removeDownload(undefined);
   assert.strictEqual(fs.existsSync(path.join(other, 'x.deb')), true);
+});
+
+/* ---------- links that leave the app ---------- */
+test('only web and mail links are handed to the system', () => {
+  for (const u of ['https://www.canva.com/design/x/edit', 'http://example.com/', 'mailto:someone@example.com']) assert.strictEqual(isWebLink(u), true, u);
+  for (const u of ['file:///etc/passwd', 'javascript:alert(1)', 'ms-msdt:/id PCWDiagnostic', 'search-ms:query=x', 'smb://host/share', 'vscode://file/x', 'zoommtg://x', 'data:text/html,x', 'ftp://example.com/', '', 'not a url', null, undefined]) {
+    assert.strictEqual(isWebLink(u), false, String(u));
+  }
 });
