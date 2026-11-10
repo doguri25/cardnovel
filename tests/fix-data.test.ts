@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connect, decide, disconnect, planSync, syncedMap, type DriveFile } from '../src/drive';
 import { DEFAULTS, newPost, newWork, type Work } from '../src/model';
-import { kv, works } from '../src/store';
+import { kv, storageKind, works } from '../src/store';
 import { backupOne, renderDriveBox } from '../src/ui/drive';
 import type { App } from '../src/app';
 import { deleteAllVersions, listVersions, saveVersion } from '../src/versions';
@@ -130,5 +130,46 @@ describe('safety versions', () => {
     w.finished = { ...w.finished!, images: [pic('C'), pic('D')] };
     expect(await saveVersion(w, 'canva')).not.toBeNull();
     await deleteAllVersions(w.id);
+  });
+});
+
+/* ---------- #17: a failed IndexedDB write is reported, and does not move the session to localStorage ---------- */
+describe('device storage', () => {
+  const domError = (name: string) => Object.assign(new Error(name), { name });
+
+  it('reports a failed write and keeps reading from IndexedDB', async () => {
+    const w = newWork(DEFAULTS);
+    await works.put(w);
+    await kv.set('trash.index', [{ id: 'old' }]);
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw domError('QuotaExceededError'); });
+    await expect(works.put({ ...w, caption: '못 저장한 글' })).rejects.toThrow();
+    await expect(kv.set('currentId', w.id)).rejects.toThrow();
+    put.mockRestore();
+    expect(storageKind()).toBe('indexeddb');
+    expect((await works.all()).some((x) => x.id === w.id)).toBe(true);
+    expect(await kv.get('trash.index', [])).toEqual([{ id: 'old' }]);
+  });
+
+  it('opens a new connection when the browser dropped the old one', async () => {
+    const w = newWork(DEFAULTS);
+    await works.put(w); // connection open
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementationOnce(() => { throw domError('InvalidStateError'); });
+    await works.put({ ...w, caption: '다시 연결' });
+    expect((await works.get(w.id))?.caption).toBe('다시 연결');
+    expect(storageKind()).toBe('indexeddb');
+  });
+
+  it('uses localStorage only when IndexedDB does not open, and reports a full localStorage', async () => {
+    vi.resetModules();
+    vi.stubGlobal('indexedDB', undefined);
+    const store = await import('../src/store');
+    const w = newWork(DEFAULTS);
+    await store.works.put(w);
+    expect(store.storageKind()).toBe('localstorage');
+    expect((await store.works.get(w.id))?.id).toBe(w.id);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw domError('QuotaExceededError'); });
+    await expect(store.works.put({ ...w, caption: '너무 큼' })).rejects.toThrow();
+    await expect(store.kv.set('currentId', w.id)).rejects.toThrow();
+    localStorage.clear();
   });
 });
