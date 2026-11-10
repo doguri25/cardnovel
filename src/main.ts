@@ -134,6 +134,12 @@ function undo() {
   $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
   if (!s) return;
   const byId = new Map(work.cards.map((c) => [c.id, c]));
+  // a step kept for another work's cards would empty this one: such steps are not this work's to undo
+  if (s.order.length !== work.cards.length || s.order.some((id) => !byId.has(id))) {
+    undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
+    toast('되돌릴 기록이 없어요.');
+    return;
+  }
   work.cards = s.order.map((id) => byId.get(id)).filter((c): c is Card => !!c);
   work.cards.forEach((c) => Object.assign(c, s.fields[c.id]));
   work.outroKind = s.outroKind;
@@ -145,9 +151,10 @@ function undo() {
 
 /** A notice with 「되돌리기」 for the change just made; it only undoes that change, not a later one. */
 function undoToast(msg: string) {
-  const depth = undoStack.length;
+  // the step the change pushed (with 20 steps kept, a later step leaves the count the same: compare the step itself)
+  const top = undoStack[undoStack.length - 1];
   toast(msg, 6500, { label: '되돌리기', run: () => {
-    if (undoStack.length === depth) undo();
+    if (top && undoStack[undoStack.length - 1] === top) undo();
     else toast('그 뒤에 다른 변경이 있어요. 카드 편집의 「되돌리기」를 써 주세요.');
   } });
 }
@@ -189,31 +196,47 @@ function save() {
   clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => void persist(true), pictureBytes(work) > 3_000_000 ? 1800 : 800);
 }
+/** The saves under way, so a change to a work no longer open can wait for its last save. */
+let writing: Promise<unknown> = Promise.resolve();
 async function persist(withThumb: boolean) {
   if (!dirty) return;
   dirty = false;
+  const done = writeWork(withThumb);
+  writing = Promise.all([writing, done]);
+  await done;
+}
+async function writeWork(withThumb: boolean) {
+  // the work being written: another work may be opened before this one is in the store
+  const w = work;
   try {
     // the library thumbnail is the cover: redraw it only when the cover changed
-    const sig = cardSig(work, 0);
-    if (withThumb && (sig !== thumbSig || !work.thumb)) { try { work.thumb = await makeThumb(); thumbSig = sig; } catch { /* keep the old one */ } }
-    await works.put(work);
-    await kv.set('currentId', work.id);
+    const sig = cardSig(w, 0);
+    if (withThumb && (sig !== thumbSig || !w.thumb)) { try { w.thumb = await makeThumb(w); thumbSig = sig; } catch { /* keep the old one */ } }
+    await works.put(w);
+    if (work !== w) return;
+    await kv.set('currentId', w.id);
     $('savedAt').textContent = `자동 저장됨 · ${fmtTime(Date.now())}`;
     afterLocalSave(app);
     if (Date.now() - lastTimedVersion > TIMED_VERSION_MS) { lastTimedVersion = Date.now(); void keepVersion('timer'); }
   } catch {
-    dirty = true;
+    if (work === w) dirty = true;
     $('savedAt').textContent = '자동 저장 실패 — 보관함 「내보내기」로 백업해 두세요';
   }
 }
-async function makeThumb(): Promise<string> {
+async function makeThumb(w: Work): Promise<string> {
   const c = document.createElement('canvas');
-  c.width = W; c.height = cardHeight(work);
-  await renderCard(c.getContext('2d')!, work, 0);
+  c.width = W; c.height = cardHeight(w);
+  await renderCard(c.getContext('2d')!, w, 0);
   const t = document.createElement('canvas');
   t.width = t.height = 180;
   t.getContext('2d')!.drawImage(c, 0, 0, W, W, 0, 0, 180, 180);
   return t.toDataURL('image/jpeg', 0.72);
+}
+/** Replaces the open work with another one. What is still unsaved of the one open now is written first:
+ *  an AI result may have come in for it after the caller saved it, and the next autosave would write the new work instead. */
+async function switchTo(next: Work): Promise<void> {
+  for (let k = 0; dirty && k < 3; k++) { clearTimeout(persistTimer); await persist(true); }
+  work = next;
 }
 window.addEventListener('beforeunload', () => { if (dirty) { clearTimeout(persistTimer); void persist(false); } });
 document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) { clearTimeout(persistTimer); void persist(false); } });
@@ -280,7 +303,8 @@ async function renderImageAI() {
   $<HTMLSelectElement>('imageProvider').value = p;
   const sel = $<HTMLSelectElement>('imageModel');
   sel.hidden = usesCanva(p) || p === 'upload';
-  $<HTMLButtonElement>('btnArtAll').disabled = p === 'canva' || p === 'upload' || !online();
+  // stays off while 「모든 그림 그리기」 runs, so a second run cannot start beside it
+  $<HTMLButtonElement>('btnArtAll').disabled = p === 'canva' || p === 'upload' || !online() || !!artCtl;
   if (usesCanva(p)) { void renderCanvaStatus(); return; }
   if (sel.hidden) { setStatus($('artStatus'), '카드마다 「올리기」로 그림을 넣으세요.'); return; }
   const textP: TextProvider = p === 'gemini' ? 'google' : p === 'openai' ? 'openai' : 'anthropic';
@@ -656,9 +680,14 @@ async function changeOutroKind(k: OutroKind) {
   const hasStory = work.cards.slice(1, -1).some((c) => c.text.trim());
   const ai = textAI();
   if (k !== 'none' && hasStory && ai && online()) {
-    setStatus($('composeStatus'), `${OUTRO_KINDS[k].name} 한 줄을 쓰는 중…`, 'busy');
+    const busy = `${OUTRO_KINDS[k].name} 한 줄을 쓰는 중…`;
+    setStatus($('composeStatus'), busy, 'busy');
+    const w = work;
     try {
-      outro.text = await writeOutro(work, k, ai);
+      const text = await writeOutro(w, k, ai);
+      // another work opened, or another kind picked, while the line was written: this line is not wanted any more
+      if (work !== w || w.outroKind !== k) { if ($('composeStatus').textContent === busy) setStatus($('composeStatus'), ''); return; }
+      outro.text = text;
       save(); refreshRow(TOTAL_CARDS - 1); scheduleRender();
       setStatus($('composeStatus'), `마지막 장 덧붙임을 ${OUTRO_KINDS[k].name}(으)로 바꿨어요.`);
     } catch (e) { setStatus($('composeStatus'), aiMessage(e), 'error'); }
@@ -668,10 +697,14 @@ async function changeOutroKind(k: OutroKind) {
 async function rewrite(i: number) {
   const ai = textAI();
   if (!ai) { toast(`${PROVIDER_NAME[work.textAI.provider]} 키를 먼저 넣어 주세요.`); openSettings(); return; }
-  const card = work.cards[i];
+  const w = work;
+  const card = w.cards[i];
   if (card.kind === 'outro') {
     pushUndo();
-    try { card.text = await writeOutro(work, work.outroKind, ai); } catch (e) { toast(aiMessage(e)); return; }
+    let text: string;
+    try { text = await writeOutro(w, w.outroKind, ai); } catch (e) { toast(aiMessage(e)); return; }
+    if (work !== w) return; // another work is open now
+    card.text = text;
     save(); refreshRow(i); scheduleRender();
     return;
   }
@@ -681,30 +714,68 @@ async function rewrite(i: number) {
   const btn = row?.querySelector<HTMLButtonElement>('button[data-act="rewrite"]');
   if (btn) { btn.disabled = true; btn.textContent = '쓰는 중…'; }
   try {
-    const text = await rewriteCard(work, i, ask, ai);
+    const text = await rewriteCard(w, i, ask, ai);
+    if (work !== w) return; // another work is open now
     pushUndo();
     card.text = text;
     save(); scheduleRender(); renderReview(app);
   } catch (e) {
     toast(aiMessage(e));
   } finally {
-    refreshRow(i);
+    refreshCardRow(w, card.id);
   }
 }
 
 /* ================= pictures ================= */
 /** Pictures sent along with a card's request: the character sheet first, then the cover (for the other cards). */
-function cardRefs(i: number): CardRefs | null {
-  const p = work.imageAI.provider;
+function cardRefs(i: number, w: Work = work): CardRefs | null {
+  const p = w.imageAI.provider;
   if (p !== 'gemini' && p !== 'openai') return null;
-  const chars = work.style.refImage ? dataUrlParts(work.style.refImage) : null;
-  const cover = i !== 0 && work.cards[0].img ? dataUrlParts(work.cards[0].img) : null;
+  const chars = w.style.refImage ? dataUrlParts(w.style.refImage) : null;
+  const cover = i !== 0 && w.cards[0].img ? dataUrlParts(w.cards[0].img) : null;
   return chars || cover ? { chars, cover } : null;
 }
 
-async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<boolean> {
+/** Redraws a card's row when its work is the open one (the card may have moved meanwhile). */
+function refreshCardRow(w: Work, cardId: string) {
+  if (work.id !== w.id) return;
+  const i = work.cards.findIndex((c) => c.id === cardId);
+  if (i >= 0) refreshRow(i);
+}
+
+/** Writes to stored copies one at a time, so two results for the same work do not overwrite each other. */
+let storedWrites: Promise<unknown> = Promise.resolve();
+/** Puts an AI result into the work `w` it was asked for, finding cards by id: the open work when that is still it,
+ *  or else its stored copy (the writer may have opened another work while the AI worked). `change` must be safe to run twice. */
+async function changeCards(w: Work, change: (find: (id: string) => Card | undefined) => void): Promise<void> {
+  const inOpen = () => change((id) => work.cards.find((c) => c.id === id));
+  if (work.id === w.id) { inOpen(); save(); return; }
+  const update = storedWrites.then(async () => {
+    await writing; // its last save, if one is still under way
+    const stored = await works.get(w.id);
+    if (!stored) return;
+    change((id) => stored.cards.find((c) => c.id === id));
+    stored.updatedAt = Math.max(Date.now(), (stored.updatedAt || 0) + 1);
+    await works.put(stored);
+  });
+  storedWrites = update.catch(() => undefined);
+  await update;
+  // opened again while it was being written
+  if (work.id === w.id) { inOpen(); save(); }
+}
+
+const setPicture = (c: Card, out: { img?: string; svg?: string }, source: ImageProvider) => {
+  delete c.img; delete c.svg;
+  if (out.img) c.img = out.img;
+  if (out.svg) c.svg = out.svg;
+  c.imgSource = source;
+  c.imgPos = 'center';
+};
+
+/** Draws card i of `w` (the open work when asked). The picture goes to that card even if it moved or another work was opened meanwhile. */
+async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work = work): Promise<boolean> {
   const ai = imageAI();
-  const card = work.cards[i];
+  const card = w.cards[i];
   if (!ai) {
     toast(`${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`);
     openSettings();
@@ -712,20 +783,19 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
   }
   if (artBusy.has(card.id)) return false;
   artBusy.add(card.id);
-  refreshRow(i);
+  refreshCardRow(w, card.id);
+  // where the card is now: it can be moved while its scene is written or its picture drawn
+  const at = () => w.cards.indexOf(card);
+  const here = () => work.id === w.id;
   try {
     if (!quiet) {
-      await ensureScenes([i], signal);
-      setStatus($('artStatus'), `${i + 1}번 카드 그림을 그리는 중…`, 'busy');
+      await ensureScenes([i], signal, w);
+      if (here()) setStatus($('artStatus'), `${at() + 1}번 카드 그림을 그리는 중…`, 'busy');
     }
-    const out = await drawCard(work, i, ai, cardRefs(i), signal);
-    delete card.img; delete card.svg;
-    if (out.img) card.img = out.img;
-    if (out.svg) card.svg = out.svg;
-    card.imgSource = ai.provider;
-    card.imgPos = 'center';
-    save();
-    if (!quiet) setStatus($('artStatus'), `${i + 1}번 카드 그림을 넣었어요.${usageNote()}`);
+    if (at() < 0) return false;
+    const out = await drawCard(w, at(), ai, cardRefs(at(), w), signal);
+    await changeCards(w, (find) => { const c = find(card.id); if (c) setPicture(c, out, ai.provider); });
+    if (!quiet && here()) setStatus($('artStatus'), `${work.cards.findIndex((c) => c.id === card.id) + 1}번 카드 그림을 넣었어요.${usageNote()}`);
     return true;
   } catch (e) {
     if (!quiet) artError(e);
@@ -733,20 +803,28 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false): Promise<
     return false;
   } finally {
     artBusy.delete(card.id);
-    refreshRow(i);
+    refreshCardRow(w, card.id);
     scheduleRender();
   }
 }
 
 /** Before drawing: cards whose words changed a lot since their scene was written (or that have none) get a new scene,
  *  all in one text-AI request, so the picture shows what the card says now. Without a text AI the old scenes are used. */
-async function ensureScenes(indices: number[], signal?: AbortSignal): Promise<void> {
-  const stale = indices.filter((i) => { const c = work.cards[i]; return sceneStale(c) && !!(c.text.trim() || c.title.trim()); });
+async function ensureScenes(indices: number[], signal?: AbortSignal, w: Work = work): Promise<void> {
+  const stale = indices.filter((i) => { const c = w.cards[i]; return sceneStale(c) && !!(c.text.trim() || c.title.trim()); });
   const ai = textAI();
   if (!stale.length || !ai || !online()) return;
   setStatus($('artStatus'), `글이 바뀐 카드 ${stale.length}장의 그림 장면을 먼저 다시 쓰는 중…`, 'busy');
+  const ids = stale.map((i) => w.cards[i].id);
   try {
-    if (await refreshScenes(work, stale, ai, signal)) { save(); stale.forEach((i) => refreshRow(i)); }
+    if (await refreshScenes(w, stale, ai, signal)) {
+      // onto the open copy of the work, or its stored one, when another work or another copy was opened meanwhile
+      await changeCards(w, (find) => ids.forEach((id) => {
+        const c = find(id), from = w.cards.find((x) => x.id === id);
+        if (c && from && c !== from) { c.scene = from.scene; c.sceneFor = from.sceneFor; }
+      }));
+      ids.forEach((id) => refreshCardRow(w, id));
+    }
   } catch (e) {
     if (signal?.aborted) throw e;
     // the pictures can still be drawn from the scenes there are
@@ -783,6 +861,7 @@ function artError(e: unknown, prefix = '') {
 }
 
 async function drawAll() {
+  if (artCtl) return; // already drawing
   const ai = imageAI();
   if (!ai) { toast(`${IMG_NAME[work.imageAI.provider]} 키를 먼저 넣어 주세요.`); openSettings(); return; }
   if (ai.provider === 'canvaai') {
@@ -790,13 +869,15 @@ async function drawAll() {
     if (connected === null) { toast(CANVA_MESSAGES.unavailable); return; }
     if (!connected) { artError(new CanvaError('not_connected')); return; }
   }
-  let targets = work.cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro' && !srcOf(c)).map(({ i }) => i);
+  // the work these pictures are for: drawing stops when another work (or another copy of it) is opened
+  const w0 = work;
+  let targets = w0.cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro' && !srcOf(c)).map(({ i }) => i);
   if (!targets.length) {
     if (!(await confirmBox('모든 카드에 그림이 있어요. 표지와 본문 19장을 모두 다시 그릴까요?', { ok: '모두 다시 그리기' }))) return;
-    targets = work.cards.map((_, i) => i).filter((i) => work.cards[i].kind !== 'outro');
-    await keepVersion('draw');
+    targets = w0.cards.map((_, i) => i).filter((i) => w0.cards[i].kind !== 'outro');
+    await keepVersion('draw', w0);
   }
-  const staleN = textAI() ? targets.filter((i) => sceneStale(work.cards[i])).length : 0;
+  const staleN = textAI() ? targets.filter((i) => sceneStale(w0.cards[i])).length : 0;
   const sceneLine = staleN ? [`글이 바뀐 ${staleN}장은 그리기 전에 그림 장면을 글 AI로 다시 써요 (한 번에).`] : [];
   const ok = ai.provider === 'canvaai'
     ? await confirmBox(`그림 ${targets.length}장을 Canva AI로 그립니다. 연결한 Canva 계정의 AI 사용량이 장마다 차감돼요.`, {
@@ -815,17 +896,25 @@ async function drawAll() {
         ...sceneLine,
       ],
     });
-  if (!ok) return;
-  artCtl = new AbortController();
-  const signal = artCtl.signal;
+  // a second click while the cost question was open, or another work opened meanwhile
+  if (!ok || artCtl || work !== w0) return;
+  const ctl = new AbortController();
+  artCtl = ctl;
+  const signal = ctl.signal;
   $('btnArtStop').hidden = false;
   $<HTMLButtonElement>('btnArtAll').disabled = true;
   let done = 0, failed = 0, stop: unknown = null;
-  const status = () => setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${targets.length}`, 'busy');
-  try { await ensureScenes(targets, signal); } catch { /* stopped: handled below */ }
+  const total = targets.length;
+  const open = () => work === w0;
+  const status = () => { if (open()) setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${total}`, 'busy'); };
+  // by card id: cards can be moved while the scenes are written and the pictures drawn
+  const ids = targets.map((i) => w0.cards[i].id);
+  try { await ensureScenes(targets, signal, w0); } catch { /* stopped: handled below */ }
   status();
-  const one = async (i: number) => {
-    try { await drawOne(i, signal, true); done++; } catch (e) {
+  const one = async (id: string) => {
+    const i = w0.cards.findIndex((c) => c.id === id);
+    if (i < 0) return;
+    try { await drawOne(i, signal, true, w0); done++; } catch (e) {
       failed++;
       if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = e;
       if (e instanceof CanvaError && CANVA_STOP.includes(e.code)) stop = e;
@@ -835,15 +924,16 @@ async function drawAll() {
     status();
   };
   // the cover first, so the other cards can follow its look
-  if (targets[0] === 0) await one(targets.shift()!);
-  const queue = [...targets];
-  const worker = async () => { while (queue.length && !signal.aborted && !stop) await one(queue.shift()!); };
+  if (targets[0] === 0) { const cover = ids.shift()!; if (open() && !signal.aborted) await one(cover); }
+  const queue = [...ids];
+  const worker = async () => { while (queue.length && !signal.aborted && !stop && open()) await one(queue.shift()!); };
   // Canva AI allows 20 pictures a minute per writer and each takes 20–40 s, so three at a time; the others two
   await Promise.all(Array.from({ length: ai.provider === 'canvaai' ? 3 : 2 }, worker));
-  artCtl = null;
+  if (artCtl === ctl) artCtl = null;
   $('btnArtStop').hidden = true;
   $<HTMLButtonElement>('btnArtAll').disabled = false;
   if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.`);
+  else if (!open()) setStatus($('artStatus'), `작품이 바뀌어 그리기를 멈췄어요. 그때까지 그린 ${done}장은 원래 작품에 넣었어요.`);
   else if (stop) artError(stop, done ? `${done}장은 넣었습니다. ` : '');
   else if (failed) {
     const st = $('artStatus');
@@ -896,17 +986,21 @@ async function runCompose() {
   if (hasWork && !(await confirmBox('지금 카드를 새 이야기로 바꿀까요? 글이 그대로인 카드의 그림만 남겨요.', { ok: '바꾸기' }))) return;
 
   if (hasWork) await keepVersion('compose');
+  // the work being composed: while the AI writes, the writer may change its look, or open another work
+  const w0 = work;
   pushUndo();
-  const before = work.cards.map((c) => c.text);
+  const step = undoStack[undoStack.length - 1];
+  const before = w0.cards.map((c) => c.text);
   composeCtl = new AbortController();
   $('btnComposeStop').hidden = false;
   $<HTMLButtonElement>('btnCompose').disabled = true;
   setStatus(st, ai ? `${PROVIDER_NAME[ai.provider]}가 20장을 구성하는 중… (보통 20초~1분)` : '원고를 카드에 앉히는 중…', 'busy');
   try {
-    const seriesCtx = ai ? await seriesContext(ai, composeCtl.signal) : undefined;
-    if (seriesCtx?.previous.length) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 앞 회 ${seriesCtx.previous.length}편을 이어 ${work.episode}화 20장을 구성하는 중…`, 'busy');
+    const seriesCtx = ai ? await seriesContext(ai, composeCtl.signal, w0) : undefined;
+    if (seriesCtx?.previous.length) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 앞 회 ${seriesCtx.previous.length}편을 이어 ${w0.episode}화 20장을 구성하는 중…`, 'busy');
     else if (seriesCtx?.bible) setStatus(st, `${PROVIDER_NAME[ai!.provider]}가 시리즈 설정집을 지키며 20장을 구성하는 중…`, 'busy');
-    const draft: Work = JSON.parse(JSON.stringify(work));
+    const draft: Work = JSON.parse(JSON.stringify(w0));
+    const styleBefore = draft.style;
     const r = await compose(draft, story, mode, $<HTMLSelectElement>('outroKind').value as OutroKind, ai, composeCtl.signal, split, seriesCtx);
     if (r.mode === 'split' || r.usedAI) {
       draft.cards.forEach((c, i) => { if (c.text !== before[i]) { delete c.img; delete c.svg; delete c.imgSource; } });
@@ -914,15 +1008,30 @@ async function runCompose() {
     if (ai && draft.outroKind !== 'none' && !draft.cards[TOTAL_CARDS - 1].text) {
       try { draft.cards[TOTAL_CARDS - 1].text = await writeOutro(draft, draft.outroKind, ai, composeCtl.signal); } catch { /* the writer can fill it in */ }
     }
-    work = draft;
+    // only what composing writes goes in: a theme, handle or picture changed meanwhile stays
+    const take = (to: Work) => {
+      to.cards = draft.cards; to.source = draft.source; to.outroKind = draft.outroKind;
+      to.caption = draft.caption; to.hashtags = draft.hashtags; to.summary = draft.summary;
+      if (draft.style !== styleBefore) to.style = draft.style; // the AI's art style was taken
+    };
+    void keepStorage();
+    if (work.id !== w0.id) {
+      // another work is open now: it stays open, and the cards go to the work they were made for
+      const stored = await works.get(w0.id);
+      if (stored) { take(stored); stored.updatedAt = Math.max(Date.now(), (stored.updatedAt || 0) + 1); await works.put(stored); }
+      setStatus(st, `「${workTitle(draft)}」 20장 구성을 마쳤어요. 보관함에서 열어 보세요.`);
+      return;
+    }
+    take(work);
     current = 0;
     save(); renderAllUI();
-    void keepStorage();
     const styleNote = r.usedAI && work.style.preset === 'ai' ? ` 그림체 제안: ${work.style.name}.` : '';
     setStatus(st, `20장 구성을 마쳤어요.${styleNote} 아래에서 다듬고 그림을 그려 보세요.${!ai && r.mode === 'split' ? ' (AI 키가 없어 장면 설명·그림체 제안은 비워 두었어요.)' : ''}`);
     setTab('cards');
   } catch (e) {
-    undoStack.pop();
+    // only this run's step: after another work was opened (or more edits were made), the others stay
+    const k = undoStack.lastIndexOf(step);
+    if (k >= 0) undoStack.splice(k, 1);
     $<HTMLButtonElement>('btnUndo').disabled = !undoStack.length;
     setStatus(st, aiMessage(e), (e as AiError)?.code === 'cancelled' ? '' : 'error');
   } finally {
@@ -933,17 +1042,17 @@ async function runCompose() {
 }
 
 /** Episode 2 and later: the earlier episodes' summaries (written now where missing) go to the writer. */
-async function seriesContext(ai: TextAI, signal: AbortSignal): Promise<SeriesContext | undefined> {
-  if (!seriesName(work)) return undefined;
-  const bible = bibleText(await loadBible(work.series));
-  const prev = work.episode && work.episode >= 2 ? previousEpisodes(await works.all(), work) : [];
+async function seriesContext(ai: TextAI, signal: AbortSignal, w: Work): Promise<SeriesContext | undefined> {
+  if (!seriesName(w)) return undefined;
+  const bible = bibleText(await loadBible(w.series));
+  const prev = w.episode && w.episode >= 2 ? previousEpisodes(await works.all(), w) : [];
   if (!prev.length) return bible ? { previous: [], bible } : undefined;
   for (const p of prev) {
     if (p.summary?.trim() || !p.cards.some((c) => c.text.trim())) continue;
     setStatus($('composeStatus'), `${p.episode}화 줄거리를 정리하는 중…`, 'busy');
     try { p.summary = await summarize(p, ai, signal); await works.put(p); } catch (e) { if ((e as AiError)?.code === 'cancelled') throw e; }
   }
-  return { previous: prev.map(asPrev), keepStyle: prev[prev.length - 1].style.prompt === work.style.prompt, bible };
+  return { previous: prev.map(asPrev), keepStyle: prev[prev.length - 1].style.prompt === w.style.prompt, bible };
 }
 
 /** Starts the next episode of `fromId`'s series with the same look, art style and character picture. */
@@ -966,7 +1075,7 @@ async function startNextEpisode(fromId: string) {
     }
   }
   await keepVersion('leave');
-  work = nextEpisodeWork(from, defaults(), nextEpisodeNumber(all, from.series));
+  await switchTo(nextEpisodeWork(from, defaults(), nextEpisodeNumber(all, from.series)));
   lastTimedVersion = Date.now();
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   save(); renderAllUI();
@@ -1288,10 +1397,15 @@ function openSettings(pane: SettingsPane = 'keys') {
 }
 
 /* ================= library ================= */
+/** A trashed work's versions go with it, unless a work with that id is live again (loaded from Drive or a file). */
+async function dropVersions(id: string): Promise<void> {
+  try { if (!(await works.get(id))) await deleteAllVersions(id); } catch { /* history is a convenience */ }
+}
+
 async function openLibrary() {
   await persist(true);
   let all = await works.all();
-  for (const id of await purgeTrash().catch(() => [] as string[])) void deleteAllVersions(id).catch(() => undefined);
+  for (const id of await purgeTrash().catch(() => [] as string[])) void dropVersions(id);
   const pref = (() => { try { return JSON.parse(localStorage.getItem('cardnovel.lib') || '{}') as { sort?: LibSort; group?: boolean }; } catch { return {}; } })();
   let query = '', sort: LibSort = pref.sort && pref.sort in LIB_SORT_NAME ? pref.sort : 'recent', grouped = pref.group !== false, showTrash = false;
   const remember = () => { try { localStorage.setItem('cardnovel.lib', JSON.stringify({ sort, group: grouped })); } catch { /* fine */ } };
@@ -1386,19 +1500,26 @@ async function openLibrary() {
         const a = b.dataset.a!;
         if (a === 'back') { showTrash = false; void paint(); return; }
         if (a === 'emptyTrash') {
-          for (const id of await purgeTrash(Date.now(), true)) void deleteAllVersions(id).catch(() => undefined);
+          for (const id of await purgeTrash(Date.now(), true)) void dropVersions(id);
           void paint(); toast('휴지통을 비웠어요.'); return;
         }
         if (a === 'next') { close(); void startNextEpisode(b.dataset.id!); return; }
         const tid = b.closest<HTMLElement>('[data-tid]')?.dataset.tid;
         if (tid) {
           if (a === 'restore') {
+            // a work with this id may be live again (loaded from Drive or a file): keep it in the history before it is replaced
+            const live = tid === work.id ? work : await works.get(tid);
+            if (live) await keepVersion('restore', live);
             const w = await takeFromTrash(tid);
-            if (w) { await works.put(w); all = await works.all(); toast(`「${w.name || workTitle(w)}」을(를) 되살렸어요.`); }
+            if (w) {
+              await works.put(w);
+              if (tid === work.id) { clearTimeout(persistTimer); dirty = false; await openWork(w, false); }
+              all = await works.all(); toast(`「${w.name || workTitle(w)}」을(를) 되살렸어요.`);
+            }
           } else if (a === 'purge') {
             if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = '정말 지울까요?'; b.classList.add('danger'); return; }
             await dropFromTrash(tid);
-            void deleteAllVersions(tid).catch(() => undefined);
+            void dropVersions(tid);
           }
           void paint(); return;
         }
@@ -1454,7 +1575,7 @@ async function startNewWork() {
   await persist(true);
   await keepVersion('leave');
   const left = work.id, leftTitle = work.cards[0].title.trim();
-  work = newWork(defaults());
+  await switchTo(newWork(defaults()));
   lastTimedVersion = Date.now();
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   save(); renderAllUI(); setTab('story');
@@ -1521,10 +1642,12 @@ async function openWork(w: Work, leaveVersion = true) {
   if (leaveVersion && work && w.id !== work.id) await keepVersion('leave');
   lastTimedVersion = Date.now();
   await adoptBible(w);
-  work = normalizeWork(w, defaults());
+  await switchTo(normalizeWork(w, defaults()));
   current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
   await kv.set('currentId', work.id);
   renderAllUI();
+  // a work opened is live (loaded from Drive, for example): an old trash entry with its id must not wipe its versions or overwrite it
+  await dropFromTrash(work.id).catch(() => undefined);
 }
 
 async function importFile(file: File) {
@@ -1536,10 +1659,16 @@ async function importFile(file: File) {
     await keepVersion('leave');
     const existing = w.id ? await works.get(w.id) : null;
     if (existing) await keepVersion('drive', existing);
-    work = normalizeWork({ ...w, id: w.id || undefined }, defaults());
-    if (!w.id) work.id = Date.now().toString(36);
-    current = 0;
+    const next = normalizeWork({ ...w, id: w.id || undefined }, defaults());
+    if (!w.id) next.id = Date.now().toString(36);
+    await switchTo(next);
+    lastTimedVersion = Date.now();
+    // the steps kept so far were for the work left: they would empty this one
+    current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true;
     save(); renderAllUI();
+    // a work put back from a file is live again: once it is stored, an old trash entry of it must not wipe its versions or overwrite it
+    await app.flush();
+    await dropFromTrash(work.id).catch(() => undefined);
     toast('작품을 가져왔어요.');
   } catch {
     toast('카드소설 제작소에서 내보낸 파일이 아니에요.');
@@ -1812,7 +1941,7 @@ async function renderCanvaStatus() {
   const p = work.imageAI.provider;
   if (!usesCanva(p)) return;
   st.className = 'status';
-  $<HTMLButtonElement>('btnArtAll').disabled = p !== 'canvaai' || !connected || !online();
+  $<HTMLButtonElement>('btnArtAll').disabled = p !== 'canvaai' || !connected || !online() || !!artCtl;
   if (connected === null) { st.textContent = CANVA_MESSAGES.unavailable; return; }
   if (connected) {
     st.innerHTML = (p === 'canvaai'
@@ -1931,7 +2060,7 @@ async function handleCanvaLanding() {
   const target = parseCanvaState(l.state || '');
   if (target && target.workId !== work.id) {
     const other = await works.get(target.workId);
-    if (other) { work = normalizeWork(other, defaults()); current = 0; await kv.set('currentId', work.id); renderAllUI(); }
+    if (other) { work = normalizeWork(other, defaults()); current = 0; undoStack.length = 0; $<HTMLButtonElement>('btnUndo').disabled = true; await kv.set('currentId', work.id); renderAllUI(); }
   }
   if (target?.cardId === 'finish' && l.design) {
     $('finishBox').scrollIntoView({ block: 'center' });

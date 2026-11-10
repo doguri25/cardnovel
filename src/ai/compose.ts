@@ -18,16 +18,29 @@ interface ComposeAnswer {
 
 const s = (v: unknown) => (typeof v === 'string' ? v : '').replace(/\\n/g, '\n').trim();
 
-/** Retries once with a smaller output budget for models that do not accept 16k output tokens. */
+/** Retries once with a smaller output budget for models that do not accept 16k output tokens.
+ *  An empty or cut-off answer is asked once more with more room: a model that thinks before answering
+ *  can spend a small budget before it writes anything. */
 export async function askJSON<T>(ai: TextAI, prompt: string, schema: Record<string, unknown>, signal?: AbortSignal, maxTokens = 16000, tag: UsageTag = 'other', system = SYSTEM_WRITER): Promise<T> {
   const req = { ...ai, system, prompt, schema, signal, maxTokens, tag };
-  try {
-    return await generateJSON<T>(req);
-  } catch (e) {
-    if (e instanceof AiError && e.code === 'bad_request' && /max_tokens|max_completion_tokens|maxOutputTokens|output tokens/i.test(e.message) && maxTokens > 8000) {
-      return generateJSON<T>({ ...req, maxTokens: 8000 });
+  let cap = Infinity;
+  const ask = async (budget: number): Promise<T> => {
+    const n = Math.min(budget, cap);
+    try {
+      return await generateJSON<T>({ ...req, maxTokens: n });
+    } catch (e) {
+      if (e instanceof AiError && e.code === 'bad_request' && /max_tokens|max_completion_tokens|maxOutputTokens|output tokens/i.test(e.message) && n > 8000) {
+        cap = 8000;
+        return generateJSON<T>({ ...req, maxTokens: 8000 });
+      }
+      throw e;
     }
-    if (e instanceof AiError && e.code === 'invalid_json') return generateJSON<T>(req); // one more try
+  };
+  try {
+    return await ask(maxTokens);
+  } catch (e) {
+    // one more try, with more room
+    if (e instanceof AiError && (e.code === 'invalid_json' || e.code === 'empty')) return ask(Math.min(16000, Math.max(maxTokens * 4, 8000)));
     throw e;
   }
 }
@@ -112,14 +125,18 @@ export function sceneStale(c: Card): boolean {
 /** Writes the scenes of these cards again from their current words, in one request. Returns how many were updated. */
 export async function refreshScenes(w: Work, indices: number[], ai: TextAI, signal?: AbortSignal): Promise<number> {
   if (!indices.length) return 0;
+  // the card and the words each number was sent with: the writer may move a card or change its words while the AI writes
+  const sent = new Map(indices.map((i) => [i, { id: w.cards[i].id, text: w.cards[i].text }]));
   const r = await askJSON<{ scenes?: { card?: number; scene?: string }[] }>(ai, scenesPrompt(w, indices), SCENES_SCHEMA, signal, 4000, 'scene');
   let n = 0;
   for (const x of Array.isArray(r.scenes) ? r.scenes : []) {
-    const i = Number(x?.card) - 1;
+    const was = sent.get(Number(x?.card) - 1);
     const scene = s(x?.scene);
-    if (!indices.includes(i) || !scene) continue;
-    w.cards[i].scene = scene;
-    w.cards[i].sceneFor = w.cards[i].text;
+    const card = was && w.cards.find((c) => c.id === was.id);
+    if (!was || !card || !scene) continue;
+    card.scene = scene;
+    // written for the words that were sent: if they changed a lot meanwhile, the card still reads as needing a new scene
+    card.sceneFor = was.text;
     n++;
   }
   return n;
