@@ -14,6 +14,7 @@ interface ImportJob {
 
 export async function POST(req: Request): Promise<Response> {
   let url = '';
+  let cookies: string[] = [];
   try {
     const body = (await req.json().catch(() => ({}))) as { url?: string; title?: string; state?: string };
     url = checkDeckUrl(body.url);
@@ -21,6 +22,7 @@ export async function POST(req: Request): Promise<Response> {
     if (!isValidState(state)) throw new HttpError(400, 'bad_state');
     const title = String(body.title || '카드소설').slice(0, 50);
     const { token, setCookies } = await accessToken(req);
+    cookies = setCookies;
     const started = await canva<ImportJob>(token, '/url-imports', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -35,7 +37,7 @@ export async function POST(req: Request): Promise<Response> {
     });
     return json({ designs }, 200, setCookies);
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, cookies);
   } finally {
     if (url) await del(url).catch(() => undefined);
   }

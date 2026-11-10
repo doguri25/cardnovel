@@ -5,11 +5,13 @@ import { HttpError, accessToken, canva, errorResponse, json, pollJob } from '../
 interface ExportJob { job: { id: string; status: string; urls?: string[]; error?: { code: string; message: string } } }
 
 export async function POST(req: Request): Promise<Response> {
+  let cookies: string[] = [];
   try {
     const body = (await req.json().catch(() => ({}))) as { designId?: string };
     const designId = String(body.designId || '');
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(designId)) throw new HttpError(400, 'bad_design');
     const { token, setCookies } = await accessToken(req);
+    cookies = setCookies;
     const started = await canva<ExportJob>(token, '/exports', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -19,6 +21,6 @@ export async function POST(req: Request): Promise<Response> {
     if (done.job.status !== 'success' || !done.job.urls?.length) throw new HttpError(502, 'export_failed', done.job.error?.message || 'export failed');
     return json({ urls: done.job.urls }, 200, setCookies);
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, cookies);
   }
 }

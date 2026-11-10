@@ -9,6 +9,7 @@ interface DesignResponse { design: { id: string; urls: { edit_url: string } } }
 const MAX_BYTES = 3_500_000;
 
 export async function POST(req: Request): Promise<Response> {
+  let cookies: string[] = [];
   try {
     const body = (await req.json().catch(() => ({}))) as Body;
     const width = Math.round(Number(body.width)), height = Math.round(Number(body.height));
@@ -16,14 +17,19 @@ export async function POST(req: Request): Promise<Response> {
     const state = String(body.state || '');
     if (!isValidState(state)) throw new HttpError(400, 'bad_state');
     const title = String(body.title || '카드소설 그림').slice(0, 50);
-    const { token, setCookies } = await accessToken(req);
-
-    let assetId: string | undefined;
+    // the picture is checked before the token is touched, so a refused picture never uses up a refresh
+    let bytes: Uint8Array<ArrayBuffer> | undefined;
     if (body.image) {
       const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(body.image);
       if (!m) throw new HttpError(400, 'bad_image', 'PNG or JPEG data URL expected');
-      const bytes = Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0));
+      bytes = Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0));
       if (bytes.length > MAX_BYTES) throw new HttpError(413, 'image_too_large');
+    }
+    const { token, setCookies } = await accessToken(req);
+    cookies = setCookies;
+
+    let assetId: string | undefined;
+    if (bytes) {
       const nameB64 = btoa(String.fromCharCode(...new TextEncoder().encode(title)));
       const started = await canva<UploadJob>(token, '/asset-uploads', {
         method: 'POST',
@@ -42,8 +48,8 @@ export async function POST(req: Request): Promise<Response> {
     });
     const edit = new URL(created.design.urls.edit_url);
     edit.searchParams.set('correlation_state', state);
-    return json({ designId: created.design.id, editUrl: edit.toString() }, 200, setCookies);
+    return json({ designId: created.design.id, editUrl: edit.toString() }, 200, cookies);
   } catch (e) {
-    return errorResponse(e);
+    return errorResponse(e, cookies);
   }
 }

@@ -193,7 +193,17 @@ export async function accessToken(req: Request): Promise<{ token: string; setCoo
   if (t.e - Date.now() > 60_000) return { token: t.a, setCookies: [] };
   if (!t.r) throw new HttpError(401, 'not_connected', 'Canva session expired');
   // refresh tokens are single-use: the new one replaces the old one in the cookie
-  const fresh = await tokenRequest({ grant_type: 'refresh_token', refresh_token: t.r });
+  let fresh: TokenSet;
+  try {
+    fresh = await tokenRequest({ grant_type: 'refresh_token', refresh_token: t.r });
+  } catch (e) {
+    // several Canva calls run at once, so another one may have just used this refresh token: the access token still
+    // works until it expires, and that other call's answer brings the browser the new one
+    if (t.e > Date.now()) return { token: t.a, setCookies: [] };
+    // Canva no longer takes the refresh token (used, revoked or expired): the writer has to connect again
+    if (e instanceof HttpError && e.status === 401) throw new HttpError(401, 'not_connected', 'Canva session expired');
+    throw e;
+  }
   return { token: fresh.a, setCookies: await tokenCookies(fresh) };
 }
 
