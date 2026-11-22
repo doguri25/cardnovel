@@ -454,6 +454,7 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .gx-step h3 { margin: 0 0 8px; font-size: 14px; }
 .gx-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
 .gx-line .hint { flex: 1 1 220px; margin: 0; }
+.gx-line a.btn { text-decoration: none; color: inherit; }
 .gx-line.target { outline: 2px solid var(--primary); outline-offset: 4px; border-radius: 6px; }
 .gx-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
 .gx-row { display: grid; grid-template-columns: 4.2em minmax(0, 1fr) 40px auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }

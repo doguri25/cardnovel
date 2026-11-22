@@ -433,6 +433,21 @@ describe('pictures from the Gemini app', () => {
     } finally { await closeModal(); }
   });
 
+  it('when every card has a picture, a paste waits until the writer picks a card (nothing is replaced unasked)', async () => {
+    const w = storyWork('F');
+    w.cards.forEach((c, i) => { c.svg = `<svg xmlns="http://www.w3.org/2000/svg" data-i="${i}"/>`; });
+    await openFromLibrary(w);
+    el('btnGeminiApp').click();
+    await until(() => !!document.querySelector('#modal .gx-row'));
+    try {
+      expect(document.querySelector('#modal .gx-row.target')).toBeNull();
+      expect(pasteImage().defaultPrevented).toBe(true);
+      await sleep(150);
+      expect(cur().cards.every((c) => !c.img)).toBe(true);
+      expect(el('gxStatus').textContent).toContain('카드를 먼저 골라');
+    } finally { await closeModal(); }
+  });
+
   it('pictures uploaded together go, in the order they were made, onto the cards without one, after the order check', async () => {
     const w = storyWork('U');
     w.cards[1].svg = '<svg xmlns="http://www.w3.org/2000/svg" data-keep="1"/>';

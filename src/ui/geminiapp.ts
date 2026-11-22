@@ -55,7 +55,8 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
   const picCards = () => app.work().cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro');
   const missing = () => picCards().filter(({ c }) => !srcOf(c)).map(({ i }) => i);
   const nextMissing = (after: number) => missing().find((i) => i > after) ?? missing()[0] ?? null;
-  let target: Target | null = missing()[0] ?? 0;
+  // nothing marked when every card has a picture: a stray paste must not replace one
+  let target: Target | null = missing()[0] ?? null;
   let box: HTMLElement | null = null;
   let review: { file: File; url: string; index: number }[] | null = null;
 
@@ -139,7 +140,7 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
     if (app.work().id !== w0.id) { status('다른 작품이 열려 그림을 넣지 않았어요. 도우미를 다시 열어 주세요.', 'error'); return; }
     if (t === 'ref') {
       await deps.setRef(url);
-      target = missing()[0] ?? 0;
+      target = missing()[0] ?? null;
       repaintList();
       status('인물 기준 그림을 넣었어요.');
       return;
@@ -158,6 +159,7 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
     if (pasteTarget(document.activeElement, 0) === null) return;
     e.preventDefault();
     e.stopImmediatePropagation();
+    if (target === null) { status('넣을 카드를 먼저 골라 주세요. 카드의 [복사]나 [붙여넣기]를 누르면 그 카드에 들어가요.', 'error'); return; }
     void readFile(file).then((url) => put(url));
   };
 
