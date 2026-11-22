@@ -31,6 +31,8 @@ export interface Card {
   scene: string;
   /** the card's words when its scene was written; when they change a lot the scene is written again before drawing */
   sceneFor?: string;
+  /** the writer typed this scene: 연출 정리 keeps it until the card's words change a lot again */
+  sceneByWriter?: boolean;
   /** turning point or emotional peak: the title and bar use the theme's accent colour */
   accent: boolean;
   svg?: string;
@@ -229,7 +231,8 @@ export const STYLE_PRESETS: Omit<ArtStyle, 'world'>[] = [
 ];
 /** People and setting for a new work: picture AIs otherwise draw Western people for a Korean story. */
 export const DEFAULT_WORLD = '한국인 · 현대 한국';
-export const presetStyle = (key: string): ArtStyle => ({ ...(STYLE_PRESETS.find((s) => s.preset === key) ?? STYLE_PRESETS[0]), world: DEFAULT_WORLD });
+// charactersByWriter false: a new style's looks are the AI's to write (a work saved before the flag existed has none: see applyDirection)
+export const presetStyle = (key: string): ArtStyle => ({ ...(STYLE_PRESETS.find((s) => s.preset === key) ?? STYLE_PRESETS[0]), world: DEFAULT_WORLD, charactersByWriter: false });
 
 export const DEFAULTS = {
   series: '3분 미스터리',

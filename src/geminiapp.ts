@@ -1,6 +1,7 @@
 // Gemini 앱 도우미, the pure part: what the writer copies into the Gemini app (one chat for the whole story, so the
 // people stay the same), and where the pictures coming back go. The app itself is never driven from here.
 import { artAspect, layoutOf } from './ai/compose';
+import { sceneStale } from './scene';
 import { parseCharacters, scenePeople, worldLine } from './ai/prompts';
 import { canvaAspect } from './canva';
 import { stripMarks, type Work } from './model';
@@ -49,8 +50,9 @@ export function geminiFirstMessage(w: Work, count: number): string {
 /** One card's prompt: its number, its scene, only the people in it, the framing and the shape. Never the title. */
 export function geminiCardPrompt(w: Work, i: number): string {
   const c = w.cards[i];
-  const scene = c.scene.trim();
-  const { people, general } = scenePeople(w, scene || c.text);
+  // a scene written for words that have changed a lot since would show the wrong moment: go by the words then
+  const scene = sceneStale(c) ? '' : c.scene.trim();
+  const { people, general } = scenePeople(w, scene || c.scene || c.text);
   return [
     `${num(i)}번 카드${c.kind === 'cover' ? '(표지)' : ''}`,
     scene ? `장면: ${line(scene)}` : `장면: 이 카드의 글에 맞는 한 순간 — ${stripMarks(c.text).trim()}`,
@@ -70,6 +72,17 @@ export function assignFiles<T extends { lastModified: number; name: string }>(fi
     pairs: sorted.slice(0, targets.length).map((file, k) => ({ file, index: targets[k] })),
     extra: sorted.slice(targets.length),
   };
+}
+
+/** The picture in a paste: browsers put it in `files`, some only in `items`. Null when the paste holds none. */
+export function pastedImage(dt: DataTransfer | null | undefined): File | null {
+  if (!dt) return null;
+  const f = Array.from(dt.files ?? []).find((x) => x.type.startsWith('image/'));
+  if (f) return f;
+  for (const it of Array.from(dt.items ?? [])) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) { const g = it.getAsFile(); if (g) return g; }
+  }
+  return null;
 }
 
 /** The card a pasted picture goes onto: the selected one, or none while the writer is typing in a text field. */

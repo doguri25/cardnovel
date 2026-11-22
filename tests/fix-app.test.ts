@@ -185,6 +185,9 @@ function installDom() {
   proto.toBlob = (cb: (b: Blob) => void) => cb(new Blob(['x']));
   (Element.prototype as unknown as Record<string, unknown>).scrollIntoView = noop;
   (Element.prototype as unknown as Record<string, unknown>).scrollTo = noop;
+  let blobs = 0;
+  (URL as unknown as Record<string, unknown>).createObjectURL = () => `blob:test/${++blobs}`;
+  (URL as unknown as Record<string, unknown>).revokeObjectURL = noop;
   const win = window as unknown as Record<string, unknown>;
   win.scrollTo = noop;
   win.matchMedia = (q: string) => ({ matches: false, media: q, addEventListener: noop, removeEventListener: noop, addListener: noop, removeListener: noop });
@@ -413,6 +416,23 @@ describe('pictures from the Gemini app', () => {
     expect(cur().cards[6].img).toBeUndefined();
   });
 
+  it('a picture pasted over another can be put back from the notice', async () => {
+    const w = storyWork('Q');
+    w.cards[7].svg = '<svg xmlns="http://www.w3.org/2000/svg" data-old="1"/>';
+    w.cards[7].imgSource = 'claude';
+    await openFromLibrary(w);
+    document.querySelector<HTMLButtonElement>('#stepNav [data-tab="cards"]')!.click();
+    selectCard(7);
+    (document.activeElement as HTMLElement | null)?.blur();
+    pasteImage();
+    await until(() => !!cur().cards[7].img);
+    const undoBtn = await (async () => { await until(() => !!Array.from(document.querySelectorAll('#toast button, .toast button')).find((b) => b.textContent === '되돌리기')); return Array.from(document.querySelectorAll<HTMLButtonElement>('#toast button, .toast button')).find((b) => b.textContent === '되돌리기')!; })();
+    undoBtn.click();
+    await until(() => !cur().cards[7].img);
+    expect(cur().cards[7].svg).toContain('data-old');
+    expect(cur().cards[7].imgSource).toBe('claude');
+  });
+
   it('in the helper, a paste goes onto the ▶ card as 「Gemini 앱」, then ▶ moves on to the next card without a picture', async () => {
     const w = storyWork('G');
     w.cards[4].svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
@@ -421,7 +441,13 @@ describe('pictures from the Gemini app', () => {
     await until(() => !el('modal').hidden && !!document.querySelector('#modal .gx-row'));
     try {
       expect(document.querySelectorAll('#modal .gx-row')).toHaveLength(19); // every card but the last
-      expect(document.querySelector('#modal .gx-row.target')!.getAttribute('data-i')).toBe('0');
+      // the first message asks Gemini for the reference picture first: the first paste goes there
+      expect(document.querySelector('#modal #gxRefLine.target')).not.toBeNull();
+      expect(document.querySelector('#modal .gx-row.target')).toBeNull();
+      pasteImage();
+      await until(() => !!cur().style.refImage);
+      await until(() => document.querySelector('#modal .gx-row.target')?.getAttribute('data-i') === '0');
+      expect(cur().cards[0].img).toBeUndefined();
       document.querySelector<HTMLButtonElement>('#modal [data-copy="3"]')!.click();
       await until(() => document.querySelector('#modal .gx-row.target')?.getAttribute('data-i') === '3');
       pasteImage();
@@ -459,6 +485,8 @@ describe('pictures from the Gemini app', () => {
       Object.defineProperty(input, 'files', { value: [png('c.png', 30), png('a.png', 10), png('b.png', 20)], configurable: true });
       input.dispatchEvent(new Event('change', { bubbles: true }));
       await until(() => document.querySelectorAll('#modal .gx-review select').length === 3);
+      // previews straight from the files: no full-size copies held while the writer checks the order
+      expect(Array.from(document.querySelectorAll<HTMLImageElement>('#modal .gx-review img')).every((im) => im.getAttribute('src')!.startsWith('blob:'))).toBe(true);
       const picks = Array.from(document.querySelectorAll<HTMLSelectElement>('#modal .gx-review select')).map((s) => s.value);
       expect(picks).toEqual(['0', '2', '3']); // a, b, c onto 01, 03, 04 (02 has a picture)
       // the writer moves the last one to card 06
@@ -472,6 +500,95 @@ describe('pictures from the Gemini app', () => {
       expect(cur().cards[1].img).toBeUndefined();
       expect([0, 2, 5].map((i) => cur().cards[i].imgSource)).toEqual(['gemini-app', 'gemini-app', 'gemini-app']);
     } finally { await closeModal(); }
+  });
+});
+
+describe('연출 정리 and what the writer wrote', () => {
+  const directAnswer = (n = 19) => ({ characters: 'Minho: a Korean man in his 40s, navy uniform.', scenes: Array.from({ length: n }, (_, i) => ({ card: i + 1, scene: `Directed ${i + 1}` })) });
+
+  it('a scene typed in 디자인 is marked as the writer\'s', async () => {
+    await openFromLibrary(storyWork('S'));
+    row(4).querySelector<HTMLButtonElement>('[data-act="design"]')!.click();
+    await until(() => !!row(4).querySelector('textarea[data-f="scene"]'));
+    const ta = row(4).querySelector<HTMLTextAreaElement>('textarea[data-f="scene"]')!;
+    ta.value = 'Minsu holds a red umbrella at the bus stop.';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(cur().cards[4].scene).toBe('Minsu holds a red umbrella at the bus stop.');
+    expect(cur().cards[4].sceneByWriter).toBe(true);
+  });
+
+  it('changing the art style keeps the writer\'s characters theirs, and direction done', async () => {
+    await openFromLibrary(storyWork('T'));
+    const chars = el<HTMLTextAreaElement>('styleChars');
+    chars.value = 'Minho: 내가 정한 생김새';
+    chars.dispatchEvent(new Event('input', { bubbles: true }));
+    const sel = el<HTMLSelectElement>('stylePreset');
+    sel.value = Array.from(sel.options).map((o) => o.value).find((v) => v && v !== cur().style.preset)!;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(cur().style.characters).toBe('Minho: 내가 정한 생김새');
+    expect(cur().style.charactersByWriter).toBe(true);
+    expect(cur().style.directedFor).toBe(textSig(cur()));
+  });
+
+  it('a result that comes back after the same work was opened again goes onto the open copy, keeping what was typed meanwhile', async () => {
+    const A = await openFromLibrary(storyWork('V'));
+    const g = gate();
+    hooks.generateJSON = async (req) => { if (req.tag !== 'direct') throw new AiError('empty'); await g.wait; return directAnswer(); };
+    try {
+      el<HTMLButtonElement>('btnDirect').click();
+      await sleep(50);
+      await openFromLibrary(storyWork('W')); // another work, then the first one again: a new copy of it
+      await sleep(1200);
+      await openFromLibrary((await store.works.get(A.id))!);
+      type(2, '그사이에 고친 글. 지수는 결국 계단으로 내려갔다.');
+      g.open();
+      await until(() => cur().cards[5].scene === 'Directed 6');
+      expect(cur().id).toBe(A.id);
+      expect(cur().cards[2].text).toBe('그사이에 고친 글. 지수는 결국 계단으로 내려갔다.');
+      expect(cur().style.characters).toContain('navy uniform');
+      await sleep(1800); // the autosave
+      const stored = (await store.works.get(A.id))!;
+      expect(stored.cards[2].text).toBe('그사이에 고친 글. 지수는 결국 계단으로 내려갔다.');
+      expect(stored.cards[5].scene).toBe('Directed 6');
+    } finally { hooks.generateJSON = null; }
+  });
+
+  it('a result that comes back after another work was opened goes into the stored copy of its own work', async () => {
+    const A = await openFromLibrary(storyWork('X'));
+    const g = gate();
+    hooks.generateJSON = async (req) => { if (req.tag !== 'direct') throw new AiError('empty'); await g.wait; return directAnswer(); };
+    try {
+      el<HTMLButtonElement>('btnDirect').click();
+      await sleep(50);
+      const B = await openFromLibrary(storyWork('Y'));
+      g.open();
+      const t0 = Date.now();
+      let stored = (await store.works.get(A.id))!;
+      while (stored.cards[5].scene !== 'Directed 6' && Date.now() - t0 < 5000) { await sleep(30); stored = (await store.works.get(A.id))!; }
+      expect(stored.cards[5].scene).toBe('Directed 6');
+      expect(stored.style.characters).toContain('navy uniform');
+      expect(stored.style.directedFor).toBe(textSig(stored));
+      expect(cur().id).toBe(B.id);
+      expect(cur().cards[5].scene).toBe('Scene 6');
+    } finally { hooks.generateJSON = null; }
+  });
+
+  it('모든 그림 그리기 after the words changed directs once, then draws; a failed direction still draws', async () => {
+    for (const fail of [false, true]) {
+      const w = storyWork(fail ? 'Z1' : 'Z0');
+      delete w.style.directedFor;
+      await openFromLibrary(w);
+      const tags: string[] = [];
+      hooks.generateJSON = async (req) => { tags.push(req.tag ?? ''); if (fail) throw new AiError('rate_limited'); return directAnswer(); };
+      const drawn: string[] = [];
+      hooks.drawCard = async (wk, i) => { drawn.push(wk.cards[i].scene); return { svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' }; };
+      try {
+        el<HTMLButtonElement>('btnArtAll').click();
+        await until(() => drawn.length === 19 && !drawing(), 15000);
+        expect(tags.filter((t) => t === 'direct')).toHaveLength(1);
+        expect(drawn.every((sc) => sc.startsWith(fail ? 'Scene' : 'Directed'))).toBe(true);
+      } finally { hooks.generateJSON = null; hooks.drawCard = null; }
+    }
   });
 });
 

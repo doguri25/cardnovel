@@ -1,11 +1,11 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
-import { BODY_COUNT, DEFAULT_WORLD, textSig, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, DEFAULT_WORLD, textSig, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
-import { diffWords } from '../diff';
+import { sceneStale } from '../scene';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
 import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
-import { COMPOSE_SCHEMA, DIRECT_SCHEMA, directPrompt, ONE_TEXT_SCHEMA, SCENES_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, scenesPrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
+import { COMPOSE_SCHEMA, DIRECT_SCHEMA, directPrompt, parseCharacters, ONE_TEXT_SCHEMA, SCENES_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, scenesPrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
 
 export interface TextAI { provider: TextRequest['provider']; key: string; model: string }
 
@@ -53,6 +53,7 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
   cover.text = s(fixed?.hook) || s(a.hook) || cover.text;
   cover.scene = s(a.coverScene);
   cover.sceneFor = cover.text;
+  delete cover.sceneByWriter;
   for (let i = 0; i < BODY_COUNT; i++) {
     const c = w.cards[i + 1];
     const src = cards[i] ?? {};
@@ -62,6 +63,7 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
     c.title = s(src.title);
     c.scene = s(src.scene);
     c.sceneFor = c.text;
+    delete c.sceneByWriter;
     c.accent = !!src.accent;
     c.showLabel = false;
   }
@@ -72,7 +74,7 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
   w.hashtags = (Array.isArray(a.hashtags) ? a.hashtags : []).map((t) => s(t)).filter(Boolean).map((t) => (t.startsWith('#') ? t : '#' + t)).slice(0, 10);
   if (a.style && s(a.style.prompt) && !keepStyle) {
     // the writer's people and setting stay: only the look comes from the AI
-    w.style = { preset: 'ai', name: s(a.style.name) || 'AI 제안', description: s(a.style.description), prompt: s(a.style.prompt), characters: s(a.style.characters), world: w.style.world ?? DEFAULT_WORLD };
+    w.style = { preset: 'ai', name: s(a.style.name) || 'AI 제안', description: s(a.style.description), prompt: s(a.style.prompt), characters: s(a.style.characters), world: w.style.world ?? DEFAULT_WORLD, charactersByWriter: false };
   }
 }
 
@@ -108,21 +110,7 @@ export async function compose(w: Work, story: string, mode: InputMode, outroKind
 }
 
 /* ================= scenes that follow the card's words ================= */
-/** Share of the words that changed between two texts (0 = same, 1 = all different), spaces not counted. */
-export function changedShare(a: string, b: string): number {
-  const len = (t: string) => t.replace(/\s+/g, '').length;
-  const total = len(a) + len(b);
-  if (!total) return 0;
-  return diffWords(a, b).filter((p) => p.op !== 'eq').reduce((n, p) => n + len(p.text), 0) / total;
-}
-
-/** A card to draw whose scene is missing, or whose words changed a lot since the scene was written. */
-export function sceneStale(c: Card): boolean {
-  if (c.kind === 'outro') return false;
-  if (!c.scene.trim()) return true;
-  return c.sceneFor !== undefined && changedShare(c.sceneFor, c.text) > 0.2;
-}
-
+export { changedShare, sceneStale } from '../scene';
 /** Writes the scenes of these cards again from their current words, in one request. Returns how many were updated. */
 export async function refreshScenes(w: Work, indices: number[], ai: TextAI, signal?: AbortSignal): Promise<number> {
   if (!indices.length) return 0;
@@ -138,32 +126,61 @@ export async function refreshScenes(w: Work, indices: number[], ai: TextAI, sign
     card.scene = scene;
     // written for the words that were sent: if they changed a lot meanwhile, the card still reads as needing a new scene
     card.sceneFor = was.text;
+    delete card.sceneByWriter; // only stale scenes are written again, the writer's included
     n++;
   }
   return n;
 }
 
-/** 연출 정리: one request over the whole story. Scenes go on the cards they were asked for (found by id, marked as
- *  written for the words that were sent); the characters are taken unless the writer typed their own. */
-export async function directWork(w: Work, ai: TextAI, signal?: AbortSignal): Promise<{ scenes: number; characters: boolean }> {
+/** What 연출 정리 answered, mapped to card ids: the scenes with the words each was written for, and the looks. */
+export interface Direction { sig: string; scenes: { id: string; scene: string; sceneFor: string }[]; characters: string }
+
+/** 연출 정리, the request: one pass over the whole story. Nothing is changed here (see applyDirection). */
+export async function askDirection(w: Work, ai: TextAI, signal?: AbortSignal): Promise<Direction> {
   const sent = w.cards.map((c, i) => ({ i, id: c.id, text: c.text, kind: c.kind })).filter((x) => x.kind !== 'outro');
   const sig = textSig(w);
   const r = await askJSON<{ characters?: string; scenes?: { card?: number; scene?: string }[] }>(ai, directPrompt(w), DIRECT_SCHEMA, signal, 8000, 'direct');
-  let scenes = 0;
+  const scenes: Direction['scenes'] = [];
   for (const x of Array.isArray(r.scenes) ? r.scenes : []) {
     const at = sent.find((p) => p.i === Number(x?.card) - 1);
     const scene = s(x?.scene);
-    const card = at && w.cards.find((c) => c.id === at.id);
-    if (!at || !card || !scene) continue;
-    card.scene = scene;
-    card.sceneFor = at.text;
+    if (at && scene) scenes.push({ id: at.id, scene, sceneFor: at.text });
+  }
+  return { sig, scenes, characters: s(r.characters) };
+}
+
+/** Puts a direction on a work (the one asked, or another copy of it), finding cards by id. A scene the writer typed
+ *  stays while its words still fit it. Looks: the writer's own stay; the AI's are replaced; a work saved before
+ *  that was recorded keeps every look it has and only gains the people it did not have. */
+export function applyDirection(w: Work, d: Direction): { scenes: number; characters: boolean } {
+  let scenes = 0;
+  for (const x of d.scenes) {
+    const card = w.cards.find((c) => c.id === x.id);
+    if (!card || card.kind === 'outro' || (card.sceneByWriter && !sceneStale(card))) continue;
+    card.scene = x.scene;
+    card.sceneFor = x.sceneFor;
+    delete card.sceneByWriter;
     scenes++;
   }
-  const chars = s(r.characters);
-  const characters = !!chars && !w.style.charactersByWriter;
-  if (characters) w.style.characters = chars;
-  w.style.directedFor = sig;
+  let characters = false;
+  const by = w.style.charactersByWriter;
+  if (d.characters && by === false) { w.style.characters = d.characters; characters = true; }
+  else if (d.characters && by === undefined) {
+    const have = new Set(parseCharacters(w.style.characters).named.map((p) => p.name.toLowerCase()));
+    const added = parseCharacters(d.characters).named.filter((p) => !have.has(p.name.toLowerCase()));
+    if (!w.style.characters.trim()) { w.style.characters = d.characters; characters = true; }
+    else if (added.length) {
+      w.style.characters = [w.style.characters.trim(), ...added.map((p) => `${p.name}: ${p.desc}.`)].join('\n');
+      characters = true;
+    }
+  }
+  w.style.directedFor = d.sig;
   return { scenes, characters };
+}
+
+/** 연출 정리 on `w`: ask, then apply to the same object. */
+export async function directWork(w: Work, ai: TextAI, signal?: AbortSignal): Promise<{ scenes: number; characters: boolean }> {
+  return applyDirection(w, await askDirection(w, ai, signal));
 }
 
 export async function rewriteCard(w: Work, index: number, ask: string, ai: TextAI, signal?: AbortSignal): Promise<string> {

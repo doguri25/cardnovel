@@ -60,6 +60,7 @@ describe('people and setting', () => {
     applyCompose(w, { title: 't', cards: [], style: { name: 's', description: 'd', prompt: 'Moody watercolor.', characters: 'Minho: a Korean man.' } });
     expect(w.style.prompt).toBe('Moody watercolor.');
     expect(w.style.world).toBe('1980년대 부산');
+    expect(w.style.charactersByWriter).toBe(false); // the AI wrote these looks
   });
 
   it('the writing AI writes the characters for the world (Korean by default)', () => {
@@ -114,6 +115,40 @@ describe('scene direction', () => {
     expect(w.cards[4].scene).toBe('old scene 4'); // not in the answer: kept
     expect(w.style.characters).toBe('Minho: a Korean man in his 40s, short black hair, navy bus driver uniform.');
     expect(w.style.directedFor).toBe(sig);
+  });
+
+  it('a scene the writer typed stays and is sent as fixed; once its words change a lot it is directed again', async () => {
+    const w = story();
+    w.cards[5].scene = 'Minsu at the bus stop holding a red umbrella.';
+    w.cards[5].sceneFor = w.cards[5].text;
+    w.cards[5].sceneByWriter = true;
+    w.cards[6].scene = 'An old hand-written scene.';
+    w.cards[6].sceneFor = '완전히 다른 예전 글이었다. 그때는 바다가 배경이었고 아무도 없었다.';
+    w.cards[6].sceneByWriter = true;
+    const p = directPrompt(w);
+    expect(p).toContain('Minsu at the bus stop holding a red umbrella.');
+    expect(p).toContain('작가가 정한 장면');
+    expect(p).not.toContain('An old hand-written scene.');
+    vi.stubGlobal('fetch', answerWith({ characters: '', scenes: [{ card: 6, scene: 'AI scene for 6' }, { card: 7, scene: 'AI scene for 7' }] }));
+    const r = await directWork(w, ai);
+    expect(w.cards[5].scene).toBe('Minsu at the bus stop holding a red umbrella.');
+    expect(w.cards[5].sceneByWriter).toBe(true);
+    expect(w.cards[6].scene).toBe('AI scene for 7');
+    expect(w.cards[6].sceneByWriter).toBeFalsy();
+    expect(r.scenes).toBe(1);
+  });
+
+  it('a work saved before the flag existed keeps the looks it has and only gains new people', async () => {
+    const w = story();
+    delete w.style.charactersByWriter;
+    w.style.characters = 'Minho: 내가 쓴 생김새';
+    vi.stubGlobal('fetch', answerWith({ characters: 'Minho: AI version. Jiwoo: a girl of ten in a yellow raincoat.', scenes: [] }));
+    const r = await directWork(w, ai);
+    expect(w.style.characters).toContain('Minho: 내가 쓴 생김새');
+    expect(w.style.characters).toContain('Jiwoo: a girl of ten in a yellow raincoat');
+    expect(w.style.characters).not.toContain('AI version');
+    expect(r.characters).toBe(true);
+    expect(newWork(DEFAULTS).style.charactersByWriter).toBe(false); // a new work's looks are the AI's to write
   });
 
   it('keeps the characters the writer typed', async () => {

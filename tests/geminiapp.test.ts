@@ -1,7 +1,7 @@
 // Gemini 앱 도우미: the texts the writer copies into the Gemini app, and where pictures coming back go.
 import { describe, expect, it } from 'vitest';
 import { worldLine } from '../src/ai/prompts';
-import { assignFiles, geminiCardPrompt, geminiFirstMessage, pasteTarget } from '../src/geminiapp';
+import { assignFiles, geminiCardPrompt, geminiFirstMessage, pastedImage, pasteTarget } from '../src/geminiapp';
 import { DEFAULTS, newWork, type Work } from '../src/model';
 
 const work = (): Work => {
@@ -77,6 +77,27 @@ describe('a card\'s prompt', () => {
     const p = geminiCardPrompt(w, 6);
     expect(p).toContain('버스는 종점에 멈췄다.');
     expect(p).toContain('Minho: a Korean bus driver in his 40s');
+  });
+});
+
+describe('a card whose words changed after its scene was written', () => {
+  it('goes by its words, not the old scene', () => {
+    const w = work();
+    w.cards[3].sceneFor = '완전히 다른 예전 글이었다. 그때는 바다가 배경이었고 아무도 없었다.';
+    const p = geminiCardPrompt(w, 3);
+    expect(p).not.toContain('rear-view mirror');
+    expect(p).toContain('민호는 거울 속 승객을 다시 봤다.');
+    expect(p).toContain('Minho: a Korean bus driver'); // still the people it names
+  });
+});
+
+describe('the picture in a paste', () => {
+  const file = new File([new Uint8Array([1])], 'x.png', { type: 'image/png' });
+  it('is found in files, or in items where a browser fills only those', () => {
+    expect(pastedImage({ files: [file], items: [] } as unknown as DataTransfer)).toBe(file);
+    expect(pastedImage({ files: [], items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }, { kind: 'file', type: 'image/png', getAsFile: () => file }] } as unknown as DataTransfer)).toBe(file);
+    expect(pastedImage({ files: [], items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }] } as unknown as DataTransfer)).toBeNull();
+    expect(pastedImage(null)).toBeNull();
   });
 });
 

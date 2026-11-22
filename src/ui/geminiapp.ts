@@ -2,7 +2,7 @@
 // the people kept the same across the chat). This window copies the prompts and takes the pictures back:
 // a paste (Ctrl+V / ⌘V) goes onto the card marked ▶, or many downloaded files go on together after an order check.
 import type { App } from '../app';
-import { assignFiles, geminiCardPrompt, geminiFirstMessage, pasteTarget } from '../geminiapp';
+import { assignFiles, geminiCardPrompt, geminiFirstMessage, pastedImage, pasteTarget } from '../geminiapp';
 import { download } from '../export';
 import { srcOf } from '../render';
 import { esc, openModal, setStatus, toast } from './dom';
@@ -55,10 +55,13 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
   const picCards = () => app.work().cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'outro');
   const missing = () => picCards().filter(({ c }) => !srcOf(c)).map(({ i }) => i);
   const nextMissing = (after: number) => missing().find((i) => i > after) ?? missing()[0] ?? null;
+  // the first message asks Gemini for the reference picture first, so without one the first paste goes there;
   // nothing marked when every card has a picture: a stray paste must not replace one
-  let target: Target | null = missing()[0] ?? null;
+  let target: Target | null = !w0.style.refImage && missing().length ? 'ref' : missing()[0] ?? null;
   let box: HTMLElement | null = null;
+  /** the order check: previews straight from the files (object URLs), each file read only when it goes on a card */
   let review: { file: File; url: string; index: number }[] | null = null;
+  const endReview = () => { review?.forEach((r) => URL.revokeObjectURL(r.url)); review = null; };
 
   const status = (msg: string, kind: '' | 'busy' | 'error' = '') => { const el = box?.querySelector<HTMLElement>('#gxStatus'); if (el) setStatus(el, msg, kind); };
   const where = (t: Target | null) => (t === 'ref' ? '인물 기준 그림' : t === null ? '' : t === 0 ? '01번 카드(표지)' : `${num(t)}번 카드`);
@@ -154,7 +157,7 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
 
   const onPaste = (e: ClipboardEvent) => {
     if (review) return;
-    const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+    const file = pastedImage(e.clipboardData);
     if (!file) return; // words stay words
     if (pasteTarget(document.activeElement, 0) === null) return;
     e.preventDefault();
@@ -167,8 +170,8 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
     const imgs = files.filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) { status('이미지 파일을 골라 주세요.', 'error'); return; }
     const { pairs, extra } = assignFiles(imgs, missing());
-    const urls = await Promise.all([...pairs.map((p) => p.file), ...extra].map(readFile));
-    review = [...pairs.map((p, k) => ({ file: p.file, url: urls[k], index: p.index })), ...extra.map((f, k) => ({ file: f, url: urls[pairs.length + k], index: -1 }))];
+    endReview();
+    review = [...pairs.map((p) => ({ file: p.file, url: URL.createObjectURL(p.file), index: p.index })), ...extra.map((f) => ({ file: f, url: URL.createObjectURL(f), index: -1 }))];
     paint();
   };
 
@@ -183,8 +186,8 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
     if (app.work().id !== w0.id) { status('다른 작품이 열려 그림을 넣지 않았어요.', 'error'); return; }
     status(`${chosen.length}장을 넣는 중…`, 'busy');
     let ok = 0;
-    for (const r of chosen) if (await deps.setPicture(r.index, r.url)) ok++;
-    review = null;
+    for (const r of chosen) if (await deps.setPicture(r.index, await readFile(r.file).catch(() => ''))) ok++;
+    endReview();
     target = missing()[0] ?? null;
     paint();
     status(ok === chosen.length ? `그림 ${ok}장을 카드에 넣었어요.` : `그림 ${ok}장을 넣었고 ${chosen.length - ok}장은 넣지 못했어요.`, ok === chosen.length ? '' : 'error');
@@ -194,7 +197,7 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
   openModal('', {
     size: 'wide',
     top: true,
-    onClose: () => { open = false; document.removeEventListener('paste', onPaste, true); },
+    onClose: () => { open = false; endReview(); document.removeEventListener('paste', onPaste, true); },
     wire: (b, close) => {
       box = b;
       document.addEventListener('paste', onPaste, true);
@@ -254,7 +257,7 @@ export function openGeminiHelper(app: App, deps: GeminiDeps): void {
           fi.click();
           return;
         }
-        if (a === 'back') { review = null; paint(); return; }
+        if (a === 'back') { endReview(); paint(); return; }
         if (a === 'apply') { await apply(); return; }
       });
     },

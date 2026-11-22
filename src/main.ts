@@ -1,6 +1,6 @@
 import './styles.css';
 import { aiMessage, AiError, listModels, onUsage, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
-import { compose, directWork, drawCard, drawCharacterSheet, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
+import { applyDirection, askDirection, compose, drawCard, drawCharacterSheet, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
@@ -22,7 +22,7 @@ import { renderProof, wireProof } from './ui/proof';
 import { openInstaPreview } from './ui/insta';
 import { openCandidates, variantsFor } from './ui/cover';
 import { geminiHelperOpen, openGeminiHelper, type GeminiDeps } from './ui/geminiapp';
-import { pasteTarget } from './geminiapp';
+import { pastedImage, pasteTarget } from './geminiapp';
 import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
 import { openVersions, type VersionDeps } from './ui/versions';
@@ -627,7 +627,7 @@ function wireCardList() {
     if (f === 'showLabel' || f === 'accent') (card as unknown as Record<string, boolean>)[f] = el.checked;
     else (card as unknown as Record<string, string>)[f] = el.value;
     // a scene the writer typed is theirs: it stays until the card's words change a lot again
-    if (f === 'scene') { card.sceneFor = card.text; r.querySelector('.scene-field em')?.remove(); }
+    if (f === 'scene') { card.sceneFor = card.text; card.sceneByWriter = true; r.querySelector('.scene-field em')?.remove(); }
     updateCount(r, card);
     save(); scheduleRender(); scheduleReview();
   });
@@ -755,20 +755,26 @@ let storedWrites: Promise<unknown> = Promise.resolve();
 /** Puts an AI result into the work `w` it was asked for, finding cards by id: the open work when that is still it,
  *  or else its stored copy (the writer may have opened another work while the AI worked). `change` must be safe to run twice. */
 async function changeCards(w: Work, change: (find: (id: string) => Card | undefined) => void): Promise<void> {
-  const inOpen = () => change((id) => work.cards.find((c) => c.id === id));
-  if (work.id === w.id) { inOpen(); save(); return; }
+  await changeWork(w, (t) => change((id) => t.cards.find((c) => c.id === id)));
+}
+
+/** changeCards for a change to more than the cards: `change` gets the open copy of `w`'s work, or its stored one.
+ *  Returns true when the change went onto the open work. `change` must be safe to run twice. */
+async function changeWork(w: Work, change: (target: Work) => void): Promise<boolean> {
+  if (work.id === w.id) { change(work); save(); return true; }
   const update = storedWrites.then(async () => {
     await writing; // its last save, if one is still under way
     const stored = await works.get(w.id);
     if (!stored) return;
-    change((id) => stored.cards.find((c) => c.id === id));
+    change(stored);
     stored.updatedAt = Math.max(Date.now(), (stored.updatedAt || 0) + 1);
     await works.put(stored);
   });
   storedWrites = update.catch(() => undefined);
   await update;
   // opened again while it was being written
-  if (work.id === w.id) { inOpen(); save(); }
+  if (work.id === w.id) { change(work); save(); return true; }
+  return false;
 }
 
 const setPicture = (c: Card, out: { img?: string; svg?: string }, source: ImageProvider) => {
@@ -829,11 +835,13 @@ async function runDirect(w: Work = work, signal?: AbortSignal): Promise<boolean>
   btn.disabled = true;
   if (work === w) setStatus($('artStatus'), '이야기 전체를 읽고 인물 생김새와 장면을 정리하는 중…', 'busy');
   try {
-    const r = await directWork(w, ai, signal);
-    if (work === w) {
-      save(); renderStyle(); buildCardList();
+    const d = await askDirection(w, ai, signal);
+    // onto the open copy of the work (the writer may have opened it again meanwhile), or else its stored copy
+    let r = { scenes: 0, characters: false };
+    if (await changeWork(w, (t) => { r = applyDirection(t, d); })) {
+      renderStyle(); buildCardList();
       setStatus($('artStatus'), `연출을 정리했어요: 장면 ${r.scenes}장${r.characters ? ', 인물 생김새' : ' (인물 생김새는 직접 쓰신 대로 두었어요)'}.`);
-    } else await works.put(w);
+    }
     return true;
   } catch (e) {
     if (work === w) setStatus($('artStatus'), aiMessage(e), 'error');
@@ -998,7 +1006,7 @@ async function onUpload(file: File) {
  *  (the card may move meanwhile). False when the card or the work is gone by then. */
 async function setCardPicture(i: number, url: string, source: ImgSource): Promise<boolean> {
   const w0 = work, id = work.cards[i]?.id;
-  if (!id) return false;
+  if (!id || !url.startsWith('data:image/')) return false;
   const img = await shrinkImage(url);
   if (work.id !== w0.id) return false;
   const card = work.cards.find((c) => c.id === id);
@@ -1017,14 +1025,31 @@ function onPastePicture(e: ClipboardEvent) {
   if (geminiHelperOpen() || !$('modal').hidden) return;
   const onCards = isPhone() ? currentTab() === 'cards' : document.body.dataset.left === 'cards';
   if (!onCards) return;
-  const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+  const file = pastedImage(e.clipboardData);
   if (!file) return;
   const i = pasteTarget(document.activeElement, current);
   if (i === null) return;
   e.preventDefault();
+  const w0 = work, before = work.cards[i];
+  // the picture it replaces, so a paste by mistake can be put back from the notice
+  const prev = before && srcOf(before) ? { id: before.id, img: before.img, svg: before.svg, imgSource: before.imgSource, imgPos: before.imgPos } : null;
   void (async () => {
     const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
-    if (await setCardPicture(i, url, work.imageAI.provider === 'canva' ? 'canva' : 'upload')) toast(`붙여넣은 그림을 ${String(i + 1).padStart(2, '0')}번 카드에 넣었어요.`);
+    if (!(await setCardPicture(i, url, work.imageAI.provider === 'canva' ? 'canva' : 'upload'))) return;
+    const msg = `붙여넣은 그림을 ${String(i + 1).padStart(2, '0')}번 카드에 넣었어요.`;
+    const pasted = work.cards.find((c) => c.id === before.id)?.img;
+    if (!prev) { toast(msg); return; }
+    toast(msg, 6500, { label: '되돌리기', run: () => {
+      const c = work.id === w0.id ? work.cards.find((k) => k.id === prev.id) : undefined;
+      if (!c || c.img !== pasted) { toast('그 뒤에 그림이 또 바뀌어 되돌리지 않았어요.'); return; }
+      delete c.img; delete c.svg; delete c.imgSource;
+      if (prev.img) c.img = prev.img;
+      if (prev.svg) c.svg = prev.svg;
+      if (prev.imgSource) c.imgSource = prev.imgSource;
+      c.imgPos = prev.imgPos;
+      save(); refreshCardRow(work, c.id); scheduleRender();
+      toast('원래 그림으로 되돌렸어요.');
+    } });
   })();
 }
 
@@ -1877,10 +1902,12 @@ function wire() {
   $('stylePreset').addEventListener('change', () => {
     const v = $<HTMLSelectElement>('stylePreset').value;
     if (!v) return;
-    const keepChars = work.style.characters, keepRef = work.style.refImage, keepWorld = work.style.world;
+    const { characters: keepChars, charactersByWriter: keepBy, refImage: keepRef, world: keepWorld, directedFor: keepDirected } = work.style;
     work.style = presetStyle(v);
-    work.style.world = keepWorld; // the people and the place stay when only the look changes
-    if (keepChars && !work.style.characters) work.style.characters = keepChars;
+    // the people, the place and the direction stay when only the look changes (the words did not change)
+    work.style.world = keepWorld;
+    if (keepDirected) work.style.directedFor = keepDirected;
+    if (keepChars && !work.style.characters) { work.style.characters = keepChars; work.style.charactersByWriter = keepBy; }
     if (keepRef) work.style.refImage = keepRef;
     save(); renderStyle();
     toast(`그림체를 ‘${work.style.name}’(으)로 바꿨어요. 새로 그리는 그림부터 적용돼요.`);

@@ -2,6 +2,7 @@
 import { BODY_COUNT, DEFAULT_WORLD, OUTRO_KINDS, stripMarks, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { SVG_EXAMPLE } from './svg-example';
 import { layoutOf } from '../render';
+import { sceneStale } from '../scene';
 
 const str = { type: 'string' } as const;
 
@@ -219,7 +220,10 @@ export function directPrompt(w: Work): string {
   const cards = w.cards.map((c, i) => {
     if (c.kind === 'outro') return null;
     const words = stripMarks(c.kind === 'cover' ? [c.title, c.text].filter(Boolean).join(' — ') : c.text).trim();
-    return words ? `${num(i)}번 카드: ${words}` : null;
+    if (!words) return null;
+    // a scene the writer typed (and still fits the words) is fixed: the others follow it
+    const fixed = c.sceneByWriter && !sceneStale(c) ? `\n  → 작가가 정한 장면(그대로 둡니다): ${c.scene.trim()}` : '';
+    return `${num(i)}번 카드: ${words}${fixed}`;
   }).filter(Boolean).join('\n');
   return `카드소설 「${stripMarks(w.cards[0].title) || '제목 없음'}」의 그림 연출을 정리합니다. 카드마다 그림을 한 장씩 그리는데, 그림이 카드 글과 맞고 인물이 모든 카드에서 같은 사람으로 보여야 합니다.
 인물·배경: ${worldLine(w) || '지정 없음'}
@@ -231,6 +235,7 @@ export function directPrompt(w: Work): string {
 - scenes: 아래 카드마다 {card: 카드 번호(정수), scene}. scene 규칙: ${SCENE_RULE}
 - 장면이 앞뒤 카드와 이어지게 씁니다: 같은 장소는 같은 모습으로, 시간대·날씨·빛이 이어지게, 옷차림은 장면이 바뀌지 않는 한 같게. 인물은 characters의 이름으로 부릅니다.
 - 01번(표지)은 이야기의 무대와 핵심 사물을 보여 주는 장면으로 씁니다.
+- '작가가 정한 장면'이 붙은 카드는 scenes에 넣지 않습니다. 그 장면의 장소·인물·옷차림에 앞뒤 카드를 맞춥니다.
 
 [카드]
 ${cards}
