@@ -354,9 +354,12 @@ export const workTitle = (w: Work): string => stripMarks(w.cards[0]?.title || ''
 /** "3분 미스터리 · 2화" — the series line on the cover and the last card */
 export const seriesLine = (w: Pick<Work, 'series' | 'episode'>): string => [w.series, w.episode ? `${w.episode}화` : ''].filter(Boolean).join(' · ');
 /** a short fingerprint of the cards' words, to see whether a review still matches them */
-export const textSig = (w: Work): string => {
+const cardsSig = (cards: Card[]): string => {
   let h = 2166136261;
-  for (const ch of w.cards.map((c) => `${c.title}|${c.text}`).join('\n')) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 16777619); }
+  for (const ch of cards.map((c) => `${c.title}|${c.text}`).join('\n')) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36);
 };
+export const textSig = (w: Work): string => cardsSig(w.cards);
+/** The words 연출 정리 reads (every card but the last): it is due again only when these change. */
+export const directionSig = (w: Work): string => cardsSig(w.cards.filter((c) => c.kind !== 'outro'));
 export const countChars = (s: string): number => stripMarks(s || '').replace(/\s/g, '').length;

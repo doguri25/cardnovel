@@ -63,6 +63,14 @@ describe('people and setting', () => {
     expect(w.style.charactersByWriter).toBe(false); // the AI wrote these looks
   });
 
+  it('an empty world sends no people-and-setting clause; a world ending in a full stop gets just one', () => {
+    expect(composePrompt({ mode: 'idea', story: '막차 이야기', outroKind: 'question', world: '' })).not.toContain('인물·배경 ""');
+    expect(composePrompt({ mode: 'idea', story: '막차 이야기', outroKind: 'question', world: '조선 시대 한양' })).toContain('인물·배경 "조선 시대 한양"');
+    const w = work();
+    w.style.world = 'Joseon-era Hanyang.';
+    expect(worldLine(w)).toBe('People and setting: Joseon-era Hanyang.');
+  });
+
   it('the writing AI writes the characters for the world (Korean by default)', () => {
     const p = composePrompt({ mode: 'idea', story: '막차 이야기', outroKind: 'question' });
     expect(p).toContain('인물·배경');
@@ -74,7 +82,7 @@ describe('people and setting', () => {
 import { afterEach, vi } from 'vitest';
 import { directWork } from '../src/ai/compose';
 import { DIRECT_SCHEMA, directPrompt } from '../src/ai/prompts';
-import { textSig } from '../src/model';
+import { directionSig, textSig } from '../src/model';
 
 afterEach(() => vi.unstubAllGlobals());
 const ai = { provider: 'anthropic' as const, key: 'k', model: 'claude-sonnet-5-5' };
@@ -90,6 +98,17 @@ const story = (): Work => {
 };
 
 describe('scene direction', () => {
+  it('is due again when the words it read change, not when only the last card changes', () => {
+    const w = story();
+    const before = directionSig(w);
+    w.cards[19].text = '다음 화에서 만나요';
+    w.outroKind = 'teaser';
+    expect(directionSig(w)).toBe(before);
+    expect(textSig(w)).not.toBe(textSig(story()));
+    w.cards[4].text = '전혀 다른 장면이 되었다.';
+    expect(directionSig(w)).not.toBe(before);
+  });
+
   it('asks once with the whole story, the people, the world and the scene rule', () => {
     const p = directPrompt(story());
     expect(p).toContain('04번 카드: 3번째 장면. 밤 버스는 비어 있었다.');
@@ -106,7 +125,7 @@ describe('scene direction', () => {
       characters: 'Minho: a Korean man in his 40s, short black hair, navy bus driver uniform.',
       scenes: [{ card: 4, scene: 'Night bus interior, Minho in his navy uniform glances at the mirror.' }, { card: 99, scene: 'no such card' }, { card: 20, scene: 'the last card has no picture' }],
     }, bodies));
-    const sig = textSig(w);
+    const sig = directionSig(w);
     const r = await directWork(w, ai);
     expect(bodies).toHaveLength(1);
     expect(r).toEqual({ scenes: 1, characters: true });

@@ -120,7 +120,7 @@ ${MODE_RULES[mode]}
 공통: 감탄사·이모지 없이, 잔혹하거나 선정적인 묘사 없이 씁니다.
 
 그 밖의 항목:
-- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 '이름: 나이·외모·옷차림' 한 문장; 인물·배경 "${opts.world ?? DEFAULT_WORLD}"에 맞게 쓰고, 한국인이면 Korean을 넣습니다; 인물이 없으면 빈 문자열).
+- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 '이름: 나이·외모·옷차림' 한 문장; ${(opts.world ?? DEFAULT_WORLD).trim() ? `인물·배경 "${(opts.world ?? DEFAULT_WORLD).trim()}"에 맞게 쓰고, 한국인이면 Korean을 넣습니다; ` : ''}인물이 없으면 빈 문자열).
 - coverScene: 표지 그림 장면(영어 한두 문장, 이야기의 무대와 핵심 사물).
 - caption: 인스타그램 게시글 본문 2~3문장(한국어, 결말을 밝히지 않음).
 - hashtags: 6~8개, #을 붙인 한국어.
@@ -271,7 +271,7 @@ export function worldLine(w: Work): string {
   const world = (w.style.world ?? '').trim();
   if (!world) return '';
   if (world === DEFAULT_WORLD) return 'All people are Korean, with East Asian features; the setting is contemporary South Korea (streets, homes, objects), with no readable signage.';
-  return `People and setting: ${world}.`;
+  return sentence(`People and setting: ${world}`);
 }
 
 /* ---------- Canva AI: its image models weigh the start of a prompt most, so the scene goes first ---------- */

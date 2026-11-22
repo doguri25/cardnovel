@@ -1,5 +1,5 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
-import { BODY_COUNT, DEFAULT_WORLD, textSig, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, DEFAULT_WORLD, directionSig, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
 import { sceneStale } from '../scene';
@@ -138,7 +138,7 @@ export interface Direction { sig: string; scenes: { id: string; scene: string; s
 /** 연출 정리, the request: one pass over the whole story. Nothing is changed here (see applyDirection). */
 export async function askDirection(w: Work, ai: TextAI, signal?: AbortSignal): Promise<Direction> {
   const sent = w.cards.map((c, i) => ({ i, id: c.id, text: c.text, kind: c.kind })).filter((x) => x.kind !== 'outro');
-  const sig = textSig(w);
+  const sig = directionSig(w);
   const r = await askJSON<{ characters?: string; scenes?: { card?: number; scene?: string }[] }>(ai, directPrompt(w), DIRECT_SCHEMA, signal, 8000, 'direct');
   const scenes: Direction['scenes'] = [];
   for (const x of Array.isArray(r.scenes) ? r.scenes : []) {

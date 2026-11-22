@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { AiError } from '../src/ai/providers';
 import { askJSON, CARD_VARIANTS, COVER_VARIANTS, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro } from '../src/ai/compose';
-import { DEFAULTS, newWork, type Work, textSig } from '../src/model';
+import { DEFAULTS, directionSig, newWork, type Work } from '../src/model';
 
 const hooks = vi.hoisted(() => ({
   generateJSON: null as null | ((req: { tag?: string; maxTokens?: number; prompt: string }) => Promise<unknown>),
@@ -56,7 +56,7 @@ function storyWork(name = '테스트'): Work {
     c.scene = `Scene ${i + 1}`;
     c.sceneFor = c.text;
   });
-  w.style.directedFor = textSig(w); // and 연출 정리 already done for these words
+  w.style.directedFor = directionSig(w); // and 연출 정리 already done for these words
   return w;
 }
 
@@ -416,6 +416,42 @@ describe('pictures from the Gemini app', () => {
     expect(cur().cards[6].img).toBeUndefined();
   });
 
+  it('모든 그림 그리기 keeps a picture the writer put on a card while it ran', async () => {
+    await openFromLibrary(storyWork('K'));
+    document.querySelector<HTMLButtonElement>('#stepNav [data-tab="cards"]')!.click();
+    const g = gate();
+    const started: number[] = [];
+    hooks.drawCard = async (_w, i) => { started.push(i); await g.wait; return { svg: `<svg xmlns="http://www.w3.org/2000/svg" data-ai="${i}"/>` }; };
+    try {
+      el<HTMLButtonElement>('btnArtAll').click();
+      await until(() => started.length === 1); // the cover is being drawn
+      for (const i of [0, 6]) {
+        selectCard(i);
+        (document.activeElement as HTMLElement | null)?.blur();
+        pasteImage();
+        await until(() => !!cur().cards[i].img);
+      }
+      g.open();
+      await until(() => !drawing() && !!cur().cards[5].svg, 15000);
+      expect(cur().cards[0].img).toBeTruthy(); // drawn over while it was placed: the writer's stays
+      expect(cur().cards[0].svg).toBeUndefined();
+      expect(cur().cards[6].img).toBeTruthy();
+      expect(started).not.toContain(6); // placed before its turn: not drawn at all
+      expect(cur().cards[5].svg).toContain('data-ai="5"');
+      expect(el('artStatus').textContent).toContain('그대로');
+    } finally { hooks.drawCard = null; }
+  });
+
+  it('a picture pasted while typing in a card says how to put it on the card, and the words stay', async () => {
+    await openFromLibrary(storyWork('H'));
+    document.querySelector<HTMLButtonElement>('#stepNav [data-tab="cards"]')!.click();
+    const ta = row(6).querySelector<HTMLTextAreaElement>('textarea[data-f="text"]')!;
+    ta.focus();
+    expect(pasteImage(ta).defaultPrevented).toBe(false);
+    await until(() => (el('toast').textContent ?? '').includes('글 칸 밖'));
+    expect(cur().cards[6].img).toBeUndefined();
+  });
+
   it('a picture pasted over another can be put back from the notice', async () => {
     const w = storyWork('Q');
     w.cards[7].svg = '<svg xmlns="http://www.w3.org/2000/svg" data-old="1"/>';
@@ -527,7 +563,7 @@ describe('연출 정리 and what the writer wrote', () => {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     expect(cur().style.characters).toBe('Minho: 내가 정한 생김새');
     expect(cur().style.charactersByWriter).toBe(true);
-    expect(cur().style.directedFor).toBe(textSig(cur()));
+    expect(cur().style.directedFor).toBe(directionSig(cur()));
   });
 
   it('a result that comes back after the same work was opened again goes onto the open copy, keeping what was typed meanwhile', async () => {
@@ -567,10 +603,74 @@ describe('연출 정리 and what the writer wrote', () => {
       while (stored.cards[5].scene !== 'Directed 6' && Date.now() - t0 < 5000) { await sleep(30); stored = (await store.works.get(A.id))!; }
       expect(stored.cards[5].scene).toBe('Directed 6');
       expect(stored.style.characters).toContain('navy uniform');
-      expect(stored.style.directedFor).toBe(textSig(stored));
+      expect(stored.style.directedFor).toBe(directionSig(stored));
       expect(cur().id).toBe(B.id);
       expect(cur().cards[5].scene).toBe('Scene 6');
     } finally { hooks.generateJSON = null; }
+  });
+
+  it('changing only the last card does not make 모든 그림 그리기 direct again', async () => {
+    await openFromLibrary(storyWork('O'));
+    type(19, '다음 화에서 만나요, 꼭.');
+    const tags: string[] = [];
+    hooks.generateJSON = async (req) => { tags.push(req.tag ?? ''); throw new AiError('empty'); };
+    hooks.drawCard = async () => ({ svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+    try {
+      el<HTMLButtonElement>('btnArtAll').click();
+      await until(() => !drawing() && cur().cards.filter((c) => c.svg).length === 19, 15000);
+      expect(tags).not.toContain('direct');
+    } finally { hooks.generateJSON = null; hooks.drawCard = null; }
+  });
+
+  it('a second 연출 정리 started while one runs waits for it instead of asking again', async () => {
+    const w = storyWork('D2');
+    delete w.style.directedFor;
+    await openFromLibrary(w);
+    const g = gate();
+    let n = 0;
+    hooks.generateJSON = async (req) => { if (req.tag !== 'direct') throw new AiError('empty'); n++; await g.wait; return directAnswer(); };
+    try {
+      el<HTMLButtonElement>('btnDirect').click();
+      await until(() => n === 1);
+      el('btnGeminiApp').click();
+      await until(() => !!document.querySelector('#modal [data-a="direct"]'));
+      document.querySelector<HTMLButtonElement>('#modal [data-a="direct"]')!.click();
+      await sleep(100);
+      expect(n).toBe(1);
+      g.open();
+      await until(() => (el('gxStatus')?.textContent ?? '').includes('연출을 정리했어요'));
+      expect(n).toBe(1);
+      expect(cur().cards[5].scene).toBe('Directed 6');
+    } finally {
+      hooks.generateJSON = null;
+      document.querySelector<HTMLButtonElement>('#modal [data-a="close"]')?.click();
+      await until(() => el('modal').hidden);
+    }
+  });
+
+  it('keeps a version before 연출 정리 changes the scenes', async () => {
+    const w = storyWork('VV');
+    delete w.style.directedFor;
+    const A = await openFromLibrary(w);
+    hooks.generateJSON = async (req) => { if (req.tag !== 'direct') throw new AiError('empty'); return directAnswer(); };
+    try {
+      el<HTMLButtonElement>('btnDirect').click();
+      await until(() => cur().cards[5].scene === 'Directed 6');
+      const v = (await versions.listVersions(A.id)).find((m) => m.reason === 'direct');
+      expect(v).toBeTruthy();
+      expect((await versions.loadVersion(v!.id))!.cards[5].scene).toBe('Scene 6');
+    } finally { hooks.generateJSON = null; }
+  });
+
+  it('emptying the characters field gives the looks back to the AI', async () => {
+    await openFromLibrary(storyWork('E'));
+    const chars = el<HTMLTextAreaElement>('styleChars');
+    chars.value = 'Minho: 내가 정한 생김새';
+    chars.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(cur().style.charactersByWriter).toBe(true);
+    chars.value = '  ';
+    chars.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(cur().style.charactersByWriter).toBe(false);
   });
 
   it('모든 그림 그리기 after the words changed directs once, then draws; a failed direction still draws', async () => {

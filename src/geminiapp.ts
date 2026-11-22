@@ -58,6 +58,8 @@ export function geminiCardPrompt(w: Work, i: number): string {
     scene ? `장면: ${line(scene)}` : `장면: 이 카드의 글에 맞는 한 순간 — ${stripMarks(c.text).trim()}`,
     ...(people.length ? ['인물:', ...people.map((p) => `- ${line(`${p.name}: ${p.desc}`)}`)] : []),
     general ? `인물 참고: ${general}` : '',
+    // the people and setting again on every card, so a chat started again mid-way keeps them
+    (w.style.world ?? '').trim() ? `인물·배경: ${(w.style.world ?? '').trim()}` : '',
     `구도: ${FRAME_WORDS[layoutOf(c)]}`,
     `비율: ${ratioWords(w, i)}`,
     '그림 안에 글자 없이, 그림만 한 장 그려 주세요.',
@@ -85,11 +87,15 @@ export function pastedImage(dt: DataTransfer | null | undefined): File | null {
   return null;
 }
 
+const NOT_TEXT = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'range', 'color', 'image', 'hidden']);
+
 /** The card a pasted picture goes onto: the selected one, or none while the writer is typing in a text field. */
 export function pasteTarget(active: Element | null, selected: number): number | null {
   if (active) {
     const tag = active.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return null;
+    if (tag === 'TEXTAREA') return null;
+    // a field that takes words; a checkbox, button or file field just clicked does not
+    if (tag === 'INPUT' && !NOT_TEXT.has(((active as HTMLInputElement).type || 'text').toLowerCase())) return null;
     if (active.closest('[contenteditable]:not([contenteditable="false"])')) return null;
   }
   return selected;

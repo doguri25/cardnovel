@@ -53,6 +53,13 @@ describe('a card\'s prompt', () => {
     expect(q).not.toContain('Minho');
   });
 
+  it('carries the people and setting, so a chat started again mid-way still has them', () => {
+    const w = work();
+    expect(geminiCardPrompt(w, 3)).toContain('인물·배경: 한국인 · 현대 한국');
+    w.style.world = '';
+    expect(geminiCardPrompt(w, 3)).not.toContain('인물·배경');
+  });
+
   it('a full-picture card asks for its tall shape and room for the words', () => {
     const w = work();
     w.cards[3].layout = 'full';
@@ -126,6 +133,10 @@ describe('where a pasted picture goes', () => {
     expect(pasteTarget($('i'), 3)).toBeNull();
     expect(pasteTarget($('e'), 3)).toBeNull();
     expect(pasteTarget($('b'), 3)).toBe(3);
+    document.body.insertAdjacentHTML('beforeend', '<input id="c" type="checkbox"><input id="f" type="file"><input id="n" type="number">');
+    expect(pasteTarget($('c'), 3)).toBe(3); // a checkbox just clicked does not take a picture
+    expect(pasteTarget($('f'), 3)).toBe(3);
+    expect(pasteTarget($('n'), 3)).toBeNull();
     expect(pasteTarget(document.body, 0)).toBe(0);
     expect(pasteTarget(null, 7)).toBe(7);
   });

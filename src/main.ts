@@ -4,7 +4,7 @@ import { applyDirection, askDirection, compose, drawCard, drawCharacterSheet, re
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
-  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, stripMarks, textSig, workTitle,
+  BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, directionSig, newWork, normalizeWork, presetStyle, seriesLine, stripMarks, textSig, workTitle,
   type Card, type CardLayout, type ImageProvider, type ImgSource, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
@@ -786,7 +786,8 @@ const setPicture = (c: Card, out: { img?: string; svg?: string }, source: ImageP
 };
 
 /** Draws card i of `w` (the open work when asked). The picture goes to that card even if it moved or another work was opened meanwhile. */
-async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work = work): Promise<boolean> {
+/** `onlyIf`: put the picture only on a card that still passes it (「모든 그림 그리기」 leaves a picture placed meanwhile). */
+async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work = work, onlyIf?: (c: Card) => boolean): Promise<boolean> {
   const ai = imageAI();
   const card = w.cards[i];
   if (!ai) {
@@ -807,9 +808,10 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work =
     }
     if (at() < 0) return false;
     const out = await drawCard(w, at(), ai, cardRefs(at(), w), signal);
-    await changeCards(w, (find) => { const c = find(card.id); if (c) setPicture(c, out, ai.provider); });
+    let placed = false;
+    await changeCards(w, (find) => { const c = find(card.id); if (c && (!onlyIf || onlyIf(c))) { setPicture(c, out, ai.provider); placed = true; } });
     if (!quiet && here()) setStatus($('artStatus'), `${work.cards.findIndex((c) => c.id === card.id) + 1}번 카드 그림을 넣었어요.${usageNote()}`);
-    return true;
+    return placed;
   } catch (e) {
     if (!quiet) artError(e);
     if (quiet) throw e;
@@ -824,10 +826,20 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work =
 /** Before drawing: cards whose words changed a lot since their scene was written (or that have none) get a new scene,
  *  all in one text-AI request, so the picture shows what the card says now. Without a text AI the old scenes are used. */
 /** 연출 정리 not done yet, or the words changed since: worth one request before drawing many pictures. */
-const needsDirection = (w: Work) => w.cards.some((c) => c.kind === 'body' && c.text.trim()) && w.style.directedFor !== textSig(w);
+const needsDirection = (w: Work) => w.cards.some((c) => c.kind === 'body' && c.text.trim()) && w.style.directedFor !== directionSig(w);
 
+/** the 연출 정리 under way: starting it again for the same work waits for that one instead of paying for a second */
+let directing: { id: string; run: Promise<boolean> } | null = null;
 /** 연출 정리: one request over the whole story; the scenes and looks it writes go into every picture prompt. */
-async function runDirect(w: Work = work, signal?: AbortSignal): Promise<boolean> {
+function runDirect(w: Work = work, signal?: AbortSignal): Promise<boolean> {
+  if (directing && directing.id === w.id) return directing.run;
+  const mine = { id: w.id, run: directOnce(w, signal) };
+  directing = mine;
+  const done = () => { if (directing === mine) directing = null; };
+  mine.run.then(done, done);
+  return mine.run;
+}
+async function directOnce(w: Work, signal?: AbortSignal): Promise<boolean> {
   const ai = textAI();
   if (!ai) { toast(`${PROVIDER_NAME[work.textAI.provider]} 키가 필요해요. 설정에서 넣어 주세요.`); openSettings(); return false; }
   if (!online()) { toast('인터넷 연결이 필요해요.'); return false; }
@@ -836,6 +848,8 @@ async function runDirect(w: Work = work, signal?: AbortSignal): Promise<boolean>
   if (work === w) setStatus($('artStatus'), '이야기 전체를 읽고 인물 생김새와 장면을 정리하는 중…', 'busy');
   try {
     const d = await askDirection(w, ai, signal);
+    // a version first, so the scenes and looks it replaces can be had back
+    await keepVersion('direct', work.id === w.id ? work : w);
     // onto the open copy of the work (the writer may have opened it again meanwhile), or else its stored copy
     let r = { scenes: 0, characters: false };
     if (await changeWork(w, (t) => { r = applyDirection(t, d); })) {
@@ -952,13 +966,17 @@ async function drawAll() {
   const status = () => { if (open()) setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${total}`, 'busy'); };
   // by card id: cards can be moved while the scenes are written and the pictures drawn
   const ids = targets.map((i) => w0.cards[i].id);
+  // the pictures as they were when the run started: one the writer puts on a card meanwhile stays
+  const startSrc = new Map(ids.map((id) => [id, srcOf(w0.cards.find((c) => c.id === id)!) ?? '']));
+  const kept = new Set<string>();
+  const unchanged = (c: Card) => { const same = (srcOf(c) ?? '') === startSrc.get(c.id); if (!same) kept.add(c.id); return same; };
   if (direct) await runDirect(w0, signal).catch(() => undefined); // draws with the scenes there are if it fails
   try { await ensureScenes(targets, signal, w0); } catch { /* stopped: handled below */ }
   status();
   const one = async (id: string) => {
     const i = w0.cards.findIndex((c) => c.id === id);
-    if (i < 0) return;
-    try { await drawOne(i, signal, true, w0); done++; } catch (e) {
+    if (i < 0 || !unchanged(w0.cards[i])) { status(); return; }
+    try { if (await drawOne(i, signal, true, w0, unchanged)) done++; } catch (e) {
       failed++;
       if (e instanceof AiError && ['rate_limited', 'invalid_key', 'no_key', 'cancelled', 'forbidden'].includes(e.code)) stop = e;
       if (e instanceof CanvaError && CANVA_STOP.includes(e.code)) stop = e;
@@ -976,15 +994,16 @@ async function drawAll() {
   if (artCtl === ctl) artCtl = null;
   $('btnArtStop').hidden = true;
   $<HTMLButtonElement>('btnArtAll').disabled = false;
-  if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.`);
+  const keptNote = kept.size ? ` 그리는 동안 직접 넣은 ${kept.size}장은 그대로 두었어요.` : '';
+  if (signal.aborted) setStatus($('artStatus'), `중단했어요. ${done}장은 넣었습니다.${keptNote}`);
   else if (!open()) setStatus($('artStatus'), `작품이 바뀌어 그리기를 멈췄어요. 그때까지 그린 ${done}장은 원래 작품에 넣었어요.`);
   else if (stop) artError(stop, done ? `${done}장은 넣었습니다. ` : '');
   else if (failed) {
     const st = $('artStatus');
     st.className = 'status';
-    st.innerHTML = `${esc(`${done}장을 넣었고 ${failed}장은 실패했어요.${usageNote()}`)} <button class="btn tiny primary" type="button" data-a="artRetry">빠진 ${failed}장 다시 그리기</button>`;
+    st.innerHTML = `${esc(`${done}장을 넣었고 ${failed}장은 실패했어요.${keptNote}${usageNote()}`)} <button class="btn tiny primary" type="button" data-a="artRetry">빠진 ${failed}장 다시 그리기</button>`;
     st.querySelector('[data-a="artRetry"]')!.addEventListener('click', () => void drawAll());
-  } else setStatus($('artStatus'), `그림 ${done}장을 모두 넣었어요.${usageNote()}`);
+  } else setStatus($('artStatus'), kept.size ? `그림 ${done}장을 넣었어요.${keptNote}${usageNote()}` : `그림 ${done}장을 모두 넣었어요.${usageNote()}`);
 }
 
 async function onUpload(file: File) {
@@ -1028,7 +1047,11 @@ function onPastePicture(e: ClipboardEvent) {
   const file = pastedImage(e.clipboardData);
   if (!file) return;
   const i = pasteTarget(document.activeElement, current);
-  if (i === null) return;
+  if (i === null) {
+    // a picture alone pasted into a text field: the field takes nothing, so say how it reaches the card
+    if (!e.clipboardData?.getData('text/plain')) toast('그림은 글 칸 밖(카드의 빈 곳)을 누른 뒤 붙여넣으면 고른 카드에 들어가요.');
+    return;
+  }
   e.preventDefault();
   const w0 = work, before = work.cards[i];
   // the picture it replaces, so a paste by mistake can be put back from the notice
@@ -1914,7 +1937,8 @@ function wire() {
   });
   $('stylePrompt').addEventListener('input', () => { work.style.prompt = $<HTMLTextAreaElement>('stylePrompt').value; if (work.style.preset !== 'ai') work.style.preset = 'custom'; save(); });
   // typed by the writer: 연출 정리 keeps it
-  $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; work.style.charactersByWriter = true; save(); });
+  // typed by the writer: 연출 정리 keeps it; emptied: the looks are the AI's to write again
+  $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; work.style.charactersByWriter = !!work.style.characters.trim(); save(); });
   $('btnDirect').addEventListener('click', () => void runDirect().catch(() => undefined));
   $('styleWorld').addEventListener('input', () => { work.style.world = $<HTMLInputElement>('styleWorld').value; save(); });
   $('btnRefAI').addEventListener('click', () => void makeRefSheet());
