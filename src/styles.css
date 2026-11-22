@@ -449,6 +449,26 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .cand figcaption { font-size: 12.5px; color: var(--muted); text-align: center; }
 .cand.now { opacity: .85; }
 .cand .btn { justify-content: center; }
+/* Gemini 앱 도우미 */
+.gx-step { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+.gx-step h3 { margin: 0 0 8px; font-size: 14px; }
+.gx-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
+.gx-line .hint { flex: 1 1 220px; margin: 0; }
+.gx-line.target { outline: 2px solid var(--primary); outline-offset: 4px; border-radius: 6px; }
+.gx-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.gx-row { display: grid; grid-template-columns: 4.2em minmax(0, 1fr) 40px auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.gx-row:last-child { border-bottom: 0; }
+.gx-row.target { background: var(--primary-soft); color: var(--primary-soft-ink); }
+.gx-n { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; white-space: nowrap; }
+.gx-t { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.gx-row.target .gx-t { color: inherit; }
+.gx-pic img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; display: block; }
+.gx-review select { width: 100%; }
+@media (max-width: 760px) {
+  .gx-row { grid-template-columns: 4.2em minmax(0, 1fr) 30px auto auto; gap: 6px; padding: 6px 8px; }
+  .gx-pic img { width: 30px; height: 30px; }
+  .gx-list { max-height: none; }
+}
 /* ---------- series bible ---------- */
 .bible { display: flex; flex-direction: column; gap: 8px; }
 .bible .section-title { margin: 12px 0 0; }

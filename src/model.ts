@@ -5,7 +5,8 @@ export const TOTAL_CARDS = BODY_COUNT + 2;
 
 export type CardKind = 'cover' | 'body' | 'outro';
 export type OutroKind = 'question' | 'teaser' | 'note' | 'afterglow' | 'none';
-export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canvaai' | 'canva' | 'upload';
+/** where a card's picture came from; 'gemini-app': drawn by the writer in the Gemini app and pasted or uploaded */
+export type ImgSource = 'gemini' | 'openai' | 'claude' | 'canvaai' | 'canva' | 'upload' | 'gemini-app';
 export type ImgPos = 'top' | 'center' | 'bottom';
 /** stack: picture on top, words below · full: the picture fills the card, words over it · quote: one line of dialogue, large */
 export type CardLayout = 'stack' | 'full' | 'quote';

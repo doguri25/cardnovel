@@ -184,6 +184,7 @@ function installDom() {
   proto.toDataURL = () => 'data:image/jpeg;base64,AAAA';
   proto.toBlob = (cb: (b: Blob) => void) => cb(new Blob(['x']));
   (Element.prototype as unknown as Record<string, unknown>).scrollIntoView = noop;
+  (Element.prototype as unknown as Record<string, unknown>).scrollTo = noop;
   const win = window as unknown as Record<string, unknown>;
   win.scrollTo = noop;
   win.matchMedia = (q: string) => ({ matches: false, media: q, addEventListener: noop, removeEventListener: noop, addListener: noop, removeListener: noop });
@@ -382,6 +383,80 @@ describe('그림 후보 on any card', () => {
       await until(() => el('modal').hidden);
       expect(cur().cards[0].svg).toBeUndefined();
     } finally { hooks.drawCard = null; }
+  });
+});
+
+describe('pictures from the Gemini app', () => {
+  const png = (name = 'x.png', lastModified = 1) => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png', lastModified });
+  const pasteImage = (target: EventTarget = document.body) => {
+    const e = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'clipboardData', { value: { files: [png()], items: [], types: ['Files'], getData: () => '' } });
+    target.dispatchEvent(e);
+    return e;
+  };
+  const selectCard = (i: number) => row(i).querySelector<HTMLElement>('.num span')!.click();
+  const closeModal = async () => { document.querySelector<HTMLButtonElement>('#modal [data-a="close"]')?.click(); await until(() => el('modal').hidden); };
+
+  it('a picture pasted on the cards step goes onto the selected card; a paste into a text field stays the writer\'s', async () => {
+    await openFromLibrary(storyWork('P'));
+    document.querySelector<HTMLButtonElement>('#stepNav [data-tab="cards"]')!.click();
+    selectCard(5);
+    (document.activeElement as HTMLElement | null)?.blur();
+    const e = pasteImage();
+    expect(e.defaultPrevented).toBe(true);
+    await until(() => !!cur().cards[5].img);
+    expect(cur().cards[5].imgSource).toBe('upload');
+    const ta = row(6).querySelector<HTMLTextAreaElement>('textarea[data-f="text"]')!;
+    ta.focus();
+    expect(pasteImage(ta).defaultPrevented).toBe(false);
+    await sleep(150);
+    expect(cur().cards[6].img).toBeUndefined();
+  });
+
+  it('in the helper, a paste goes onto the ▶ card as 「Gemini 앱」, then ▶ moves on to the next card without a picture', async () => {
+    const w = storyWork('G');
+    w.cards[4].svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+    await openFromLibrary(w);
+    el('btnGeminiApp').click();
+    await until(() => !el('modal').hidden && !!document.querySelector('#modal .gx-row'));
+    try {
+      expect(document.querySelectorAll('#modal .gx-row')).toHaveLength(19); // every card but the last
+      expect(document.querySelector('#modal .gx-row.target')!.getAttribute('data-i')).toBe('0');
+      document.querySelector<HTMLButtonElement>('#modal [data-copy="3"]')!.click();
+      await until(() => document.querySelector('#modal .gx-row.target')?.getAttribute('data-i') === '3');
+      pasteImage();
+      await until(() => !!cur().cards[3].img);
+      expect(cur().cards[3].imgSource).toBe('gemini-app');
+      // card 5 (index 4) already has a picture: skipped
+      await until(() => document.querySelector('#modal .gx-row.target')?.getAttribute('data-i') === '5');
+      expect(cur().cards[4].svg).toBeTruthy();
+    } finally { await closeModal(); }
+  });
+
+  it('pictures uploaded together go, in the order they were made, onto the cards without one, after the order check', async () => {
+    const w = storyWork('U');
+    w.cards[1].svg = '<svg xmlns="http://www.w3.org/2000/svg" data-keep="1"/>';
+    await openFromLibrary(w);
+    el('btnGeminiApp').click();
+    await until(() => !!document.querySelector('#modal #gxFiles'));
+    try {
+      const input = document.querySelector<HTMLInputElement>('#modal #gxFiles')!;
+      Object.defineProperty(input, 'files', { value: [png('c.png', 30), png('a.png', 10), png('b.png', 20)], configurable: true });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await until(() => document.querySelectorAll('#modal .gx-review select').length === 3);
+      const picks = Array.from(document.querySelectorAll<HTMLSelectElement>('#modal .gx-review select')).map((s) => s.value);
+      expect(picks).toEqual(['0', '2', '3']); // a, b, c onto 01, 03, 04 (02 has a picture)
+      // the writer moves the last one to card 06
+      const last = document.querySelectorAll<HTMLSelectElement>('#modal .gx-review select')[2];
+      last.value = '5';
+      last.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector<HTMLButtonElement>('#modal [data-a="apply"]')!.click();
+      await until(() => !!cur().cards[5].img && !!cur().cards[2].img && !!cur().cards[0].img);
+      expect(cur().cards[3].img).toBeUndefined();
+      expect(cur().cards[1].svg).toContain('data-keep');
+      expect(cur().cards[1].img).toBeUndefined();
+      expect([0, 2, 5].map((i) => cur().cards[i].imgSource)).toEqual(['gemini-app', 'gemini-app', 'gemini-app']);
+    } finally { await closeModal(); }
   });
 });
 

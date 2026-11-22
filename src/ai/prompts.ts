@@ -292,15 +292,20 @@ const CANVA_FRAME = {
 } as const;
 const sentence = (x: string) => (/[.!?]$/.test(x) ? x : `${x}.`);
 
+/** The people a scene shows (named in it; a story with one person keeps them even when the scene says "the driver"),
+ *  and the character notes that name no one, which always go along. */
+export function scenePeople(w: Work, scene: string): { people: { name: string; desc: string }[]; general: string } {
+  const { named, general } = parseCharacters(w.style.characters);
+  const has = (name: string) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(scene);
+  const who = named.filter((p) => has(p.name) || has(p.name.split(' ')[0]));
+  return { people: who.length ? who : named.length === 1 ? named : [], general };
+}
+
 /** The prompt for Canva AI: the scene first, then only the people in it, the framing, the art style; no title text. */
 export function canvaPrompt(w: Work, index: number, variant?: string): string {
   const c = w.cards[index];
   const scene = c.scene.trim() || `A moment from a Korean short story: ${stripMarks(c.text)}`;
-  const { named, general } = parseCharacters(w.style.characters);
-  const has = (name: string) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(scene);
-  // people named in the scene; a story with one person keeps them even when the scene says "the driver"
-  const who = named.filter((p) => has(p.name) || has(p.name.split(' ')[0]));
-  const people = who.length ? who : named.length === 1 ? named : [];
+  const { people, general } = scenePeople(w, scene);
   return [
     sentence(scene),
     ...people.map((p) => sentence(`${p.name}: ${p.desc}`)),

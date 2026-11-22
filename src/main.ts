@@ -5,7 +5,7 @@ import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpis
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
   BODY_COUNT, LAYOUT_NAME, OUTRO_KINDS, TEXT_POS_NAME, TEXT_SCALES, STYLE_PRESETS, TOTAL_CARDS, countChars, newWork, normalizeWork, presetStyle, seriesLine, stripMarks, textSig, workTitle,
-  type Card, type CardLayout, type ImageProvider, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
+  type Card, type CardLayout, type ImageProvider, type ImgSource, type TextPos, type InputMode, type OutroKind, type TextProvider, type Work, type WorkDefaults,
 } from './model';
 import { detectMode, SAMPLE_SPLIT, splitManuscript } from './parse';
 import { artHeight, cardHeight, cardSig, ensureFonts, layoutOf, lookSig, renderCard, srcOf, W } from './render';
@@ -21,11 +21,13 @@ import { renderReview, wireReview } from './ui/review';
 import { renderProof, wireProof } from './ui/proof';
 import { openInstaPreview } from './ui/insta';
 import { openCandidates, variantsFor } from './ui/cover';
+import { geminiHelperOpen, openGeminiHelper, type GeminiDeps } from './ui/geminiapp';
+import { pasteTarget } from './geminiapp';
 import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
 import { openVersions, type VersionDeps } from './ui/versions';
 import { paintMini, wireMobile } from './ui/mobile';
-import { onTabChange, restoreTabs, setTab, wireSteps, type Tab } from './ui/steps';
+import { currentTab, isPhone, onTabChange, restoreTabs, setTab, wireSteps, type Tab } from './ui/steps';
 import { openPalette, type Command } from './ui/palette';
 import { okToPost, renderPrecheck } from './ui/precheck';
 import { openCaption } from './ui/caption';
@@ -56,7 +58,7 @@ let artCtl: AbortController | null = null;
 let uploadTarget: number | null = null;
 
 const PROVIDER_NAME: Record<TextProvider, string> = { anthropic: 'Claude', google: 'Gemini', openai: 'GPT' };
-const IMG_NAME: Record<ImageProvider, string> = { gemini: 'Gemini', openai: 'GPT', claude: 'Claude SVG', canvaai: 'Canva AI', canva: 'Canva', upload: '올림' };
+const IMG_NAME: Record<ImgSource, string> = { gemini: 'Gemini', openai: 'GPT', claude: 'Claude SVG', canvaai: 'Canva AI', canva: 'Canva', upload: '올림', 'gemini-app': 'Gemini 앱' };
 /** the Canva connection is used to draw (Canva AI) or to edit by hand (Canva) */
 const usesCanva = (p: ImageProvider) => p === 'canva' || p === 'canvaai';
 const KIND_NAME: Record<Card['kind'], string> = { cover: '표지', body: '본문', outro: '마지막' };
@@ -989,13 +991,49 @@ async function onUpload(file: File) {
     toast('인물 기준 그림을 넣었어요.');
     return;
   }
-  const card = work.cards[i];
-  delete card.svg;
-  card.img = await shrinkImage(url);
-  card.imgSource = work.imageAI.provider === 'canva' ? 'canva' : 'upload';
-  card.imgPos = 'center';
-  save(); refreshRow(i); scheduleRender();
+  await setCardPicture(i, url, work.imageAI.provider === 'canva' ? 'canva' : 'upload');
 }
+
+/** Puts a picture (a data URL) on card `i` of the open work, found again by id after it is made smaller
+ *  (the card may move meanwhile). False when the card or the work is gone by then. */
+async function setCardPicture(i: number, url: string, source: ImgSource): Promise<boolean> {
+  const w0 = work, id = work.cards[i]?.id;
+  if (!id) return false;
+  const img = await shrinkImage(url);
+  if (work.id !== w0.id) return false;
+  const card = work.cards.find((c) => c.id === id);
+  if (!card) return false;
+  delete card.svg;
+  card.img = img;
+  card.imgSource = source;
+  card.imgPos = 'center';
+  save(); refreshCardRow(work, id); scheduleRender();
+  return true;
+}
+
+/** A picture pasted (Ctrl+V / ⌘V) on the cards step goes onto the selected card, unless the writer is typing in a field.
+ *  The Gemini helper takes its own pastes; other windows take none. */
+function onPastePicture(e: ClipboardEvent) {
+  if (geminiHelperOpen() || !$('modal').hidden) return;
+  const onCards = isPhone() ? currentTab() === 'cards' : document.body.dataset.left === 'cards';
+  if (!onCards) return;
+  const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+  if (!file) return;
+  const i = pasteTarget(document.activeElement, current);
+  if (i === null) return;
+  e.preventDefault();
+  void (async () => {
+    const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
+    if (await setCardPicture(i, url, work.imageAI.provider === 'canva' ? 'canva' : 'upload')) toast(`붙여넣은 그림을 ${String(i + 1).padStart(2, '0')}번 카드에 넣었어요.`);
+  })();
+}
+
+const geminiDeps: GeminiDeps = {
+  needsDirection: () => !!textAI() && needsDirection(work),
+  direct: () => runDirect(),
+  setPicture: (i, url) => setCardPicture(i, url, 'gemini-app'),
+  setRef: async (url) => { work.style.refImage = await shrinkImage(url, 1280); save(); renderRefBox(); },
+};
 
 /* ================= compose ================= */
 async function runCompose() {
@@ -1874,6 +1912,8 @@ function wire() {
     void saveSettings(settings); save();
   });
   $('btnArtAll').addEventListener('click', () => void drawAll());
+  $('btnGeminiApp').addEventListener('click', () => openGeminiHelper(app, geminiDeps));
+  document.addEventListener('paste', onPastePicture);
   $('btnArtStop').addEventListener('click', () => artCtl?.abort());
   $('fileInput').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void onUpload(f); });
   $('libFile').addEventListener('change', (e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void importFile(f); });
