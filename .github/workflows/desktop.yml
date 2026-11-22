@@ -1,0 +1,122 @@
+name: Desktop installers
+
+# Builds the macOS (.dmg), Windows (.exe) and Ubuntu (.deb, .AppImage) installers and publishes them on
+# the GitHub release "desktop-v<version>" (version from desktop/package.json). The release and its tag are
+# created on the first build of a version; later builds of the same version replace the files.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/amazing-edison-vlnc9l', 'main']
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    tags: ['desktop-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, args: --mac }
+          - { name: Windows, os: windows-latest, args: --win }
+          - { name: Ubuntu, os: ubuntu-latest, args: --linux }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: Updater unit tests
+        if: runner.os == 'Linux'
+        run: npm test
+      - name: Smoke test (the app opens cardnovel.vercel.app and shows 20 cards)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx electron . --smoke-test --no-sandbox
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # every installer is launched once on its own OS: it must open cardnovel.vercel.app and show 20 cards
+      - name: Smoke test the packaged app (macOS, copied out of the dmg the way a user does)
+        if: runner.os == 'macOS'
+        run: |
+          set -x
+          MNT=$(mktemp -d)
+          hdiutil attach dist/*-mac-arm64.dmg -nobrowse -readonly -mountpoint "$MNT"
+          rm -rf /tmp/inst && mkdir -p /tmp/inst && cp -R "$MNT"/*.app /tmp/inst/
+          hdiutil detach "$MNT"
+          APP=$(ls -d /tmp/inst/*.app)
+          codesign --verify --deep --strict "$APP"
+          "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --smoke-test
+          # the updater reads a release manifest (here a local one for a pretend 9.9.9) and finds this computer's installer
+          mkdir -p /tmp/feed && node scripts/manifest.js dist desktop-v9.9.9 > /tmp/feed/latest.json
+          (cd /tmp/feed && python3 -m http.server 8765 >/dev/null 2>&1 &) ; sleep 1
+          CARDNOVEL_UPDATE_FEED=http://127.0.0.1:8765/latest.json "$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" --update-check-only | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-mac-arm64.dmg","sha256":true,"newer":true' /tmp/update.txt
+          # what Gatekeeper says about a downloaded copy (the app has no Apple Developer ID, so it is rejected until "Open Anyway")
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "$APP"
+          spctl --assess --type execute -vv "$APP" || true
+      - name: Smoke test the packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./dist/win-unpacked/CardNovel.exe --smoke-test
+      - name: Smoke test the packaged app (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a ./dist/linux-unpacked/cardnovel --smoke-test --no-sandbox
+          mkdir -p /tmp/feed && node scripts/manifest.js dist desktop-v9.9.9 > /tmp/feed/latest.json
+          (cd /tmp/feed && python3 -m http.server 8765 >/dev/null 2>&1 &) ; sleep 1
+          CARDNOVEL_UPDATE_FEED=http://127.0.0.1:8765/latest.json xvfb-run -a ./dist/linux-unpacked/cardnovel --update-check-only --no-sandbox | tee /tmp/update.txt
+          grep -q '"file":"CardNovel-.*-linux-amd64.deb","sha256":true,"newer":true' /tmp/update.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CardNovel-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            desktop/package.json
+            desktop/RELEASE_NOTES.md
+            desktop/scripts/manifest.js
+          sparse-checkout-cone-mode: false
+      - name: Release tag from the desktop version
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=desktop-v$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Update manifest for the desktop updater (latest.json)
+        run: node desktop/scripts/manifest.js out "${{ steps.tag.outputs.name }}" desktop/RELEASE_NOTES.md > latest.json && mv latest.json out/ && head -c 400 out/latest.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          name: 카드소설 제작소 ${{ steps.tag.outputs.name }}
+          make_latest: true
+          files: out/*
+          body_path: desktop/RELEASE_NOTES.md
