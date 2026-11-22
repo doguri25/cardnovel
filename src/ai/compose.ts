@@ -1,11 +1,11 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
-import { BODY_COUNT, DEFAULT_WORLD, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, DEFAULT_WORLD, textSig, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
 import { diffWords } from '../diff';
 import { artHeight, layoutOf, sanitizeSVG, W } from '../render';
 import { AiError, generateImage, generateJSON, generateText, type TextRequest, type UsageTag } from './providers';
-import { COMPOSE_SCHEMA, ONE_TEXT_SCHEMA, SCENES_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, scenesPrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
+import { COMPOSE_SCHEMA, DIRECT_SCHEMA, directPrompt, ONE_TEXT_SCHEMA, SCENES_SCHEMA, SYSTEM_WRITER, canvaPrompt, characterSheetPrompt, composePrompt, imagePrompt, outroPrompt, rewritePrompt, scenesPrompt, summaryPrompt, svgPrompt, type PrevEpisode } from './prompts';
 
 export interface TextAI { provider: TextRequest['provider']; key: string; model: string }
 
@@ -141,6 +141,29 @@ export async function refreshScenes(w: Work, indices: number[], ai: TextAI, sign
     n++;
   }
   return n;
+}
+
+/** 연출 정리: one request over the whole story. Scenes go on the cards they were asked for (found by id, marked as
+ *  written for the words that were sent); the characters are taken unless the writer typed their own. */
+export async function directWork(w: Work, ai: TextAI, signal?: AbortSignal): Promise<{ scenes: number; characters: boolean }> {
+  const sent = w.cards.map((c, i) => ({ i, id: c.id, text: c.text, kind: c.kind })).filter((x) => x.kind !== 'outro');
+  const sig = textSig(w);
+  const r = await askJSON<{ characters?: string; scenes?: { card?: number; scene?: string }[] }>(ai, directPrompt(w), DIRECT_SCHEMA, signal, 8000, 'direct');
+  let scenes = 0;
+  for (const x of Array.isArray(r.scenes) ? r.scenes : []) {
+    const at = sent.find((p) => p.i === Number(x?.card) - 1);
+    const scene = s(x?.scene);
+    const card = at && w.cards.find((c) => c.id === at.id);
+    if (!at || !card || !scene) continue;
+    card.scene = scene;
+    card.sceneFor = at.text;
+    scenes++;
+  }
+  const chars = s(r.characters);
+  const characters = !!chars && !w.style.charactersByWriter;
+  if (characters) w.style.characters = chars;
+  w.style.directedFor = sig;
+  return { scenes, characters };
 }
 
 export async function rewriteCard(w: Work, index: number, ask: string, ai: TextAI, signal?: AbortSignal): Promise<string> {

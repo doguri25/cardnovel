@@ -97,6 +97,10 @@ export interface ArtStyle {
   characters: string;
   /** who the people are and where it happens (인물·배경), e.g. 한국인 · 현대 한국; empty means not specified */
   world: string;
+  /** the writer typed the characters themselves: 연출 정리 keeps them */
+  charactersByWriter?: boolean;
+  /** textSig of the words the last 연출 정리 was done for */
+  directedFor?: string;
   /** character reference picture (data URL) sent with every picture request, so faces and clothes stay the same */
   refImage?: string;
 }

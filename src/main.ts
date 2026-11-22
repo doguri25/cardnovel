@@ -1,6 +1,6 @@
 import './styles.css';
 import { aiMessage, AiError, listModels, onUsage, pickDefault, type ModelInfo, type ModelLists } from './ai/providers';
-import { compose, drawCard, drawCharacterSheet, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
+import { compose, directWork, drawCard, drawCharacterSheet, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro, dataUrlParts, shrinkImage, type CardRefs, type ImageAI, type SeriesContext, type TextAI } from './ai/compose';
 import { asPrev, groupBySeries, nextEpisodeNumber, nextEpisodeWork, previousEpisodes, seriesName } from './series';
 import { adoptBible, bibleText, loadBible } from './bible';
 import {
@@ -811,6 +811,32 @@ async function drawOne(i: number, signal?: AbortSignal, quiet = false, w: Work =
 
 /** Before drawing: cards whose words changed a lot since their scene was written (or that have none) get a new scene,
  *  all in one text-AI request, so the picture shows what the card says now. Without a text AI the old scenes are used. */
+/** 연출 정리 not done yet, or the words changed since: worth one request before drawing many pictures. */
+const needsDirection = (w: Work) => w.cards.some((c) => c.kind === 'body' && c.text.trim()) && w.style.directedFor !== textSig(w);
+
+/** 연출 정리: one request over the whole story; the scenes and looks it writes go into every picture prompt. */
+async function runDirect(w: Work = work, signal?: AbortSignal): Promise<boolean> {
+  const ai = textAI();
+  if (!ai) { toast(`${PROVIDER_NAME[work.textAI.provider]} 키가 필요해요. 설정에서 넣어 주세요.`); openSettings(); return false; }
+  if (!online()) { toast('인터넷 연결이 필요해요.'); return false; }
+  const btn = $<HTMLButtonElement>('btnDirect');
+  btn.disabled = true;
+  if (work === w) setStatus($('artStatus'), '이야기 전체를 읽고 인물 생김새와 장면을 정리하는 중…', 'busy');
+  try {
+    const r = await directWork(w, ai, signal);
+    if (work === w) {
+      save(); renderStyle(); buildCardList();
+      setStatus($('artStatus'), `연출을 정리했어요: 장면 ${r.scenes}장${r.characters ? ', 인물 생김새' : ' (인물 생김새는 직접 쓰신 대로 두었어요)'}.`);
+    } else await works.put(w);
+    return true;
+  } catch (e) {
+    if (work === w) setStatus($('artStatus'), aiMessage(e), 'error');
+    throw e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function ensureScenes(indices: number[], signal?: AbortSignal, w: Work = work): Promise<void> {
   const stale = indices.filter((i) => { const c = w.cards[i]; return sceneStale(c) && !!(c.text.trim() || c.title.trim()); });
   const ai = textAI();
@@ -878,8 +904,10 @@ async function drawAll() {
     targets = w0.cards.map((_, i) => i).filter((i) => w0.cards[i].kind !== 'outro');
     await keepVersion('draw', w0);
   }
-  const staleN = textAI() ? targets.filter((i) => sceneStale(w0.cards[i])).length : 0;
-  const sceneLine = staleN ? [`글이 바뀐 ${staleN}장은 그리기 전에 그림 장면을 글 AI로 다시 써요 (한 번에).`] : [];
+  const direct = !!textAI() && needsDirection(w0);
+  const staleN = textAI() && !direct ? targets.filter((i) => sceneStale(w0.cards[i])).length : 0;
+  const sceneLine = direct ? ['그리기 전에 글 AI가 이야기 전체를 읽고 인물 생김새와 장면을 이어지게 정리해요 (연출 정리, 한 번에).']
+    : staleN ? [`글이 바뀐 ${staleN}장은 그리기 전에 그림 장면을 글 AI로 다시 써요 (한 번에).`] : [];
   const ok = ai.provider === 'canvaai'
     ? await confirmBox(`그림 ${targets.length}장을 Canva AI로 그립니다. 연결한 Canva 계정의 AI 사용량이 장마다 차감돼요.`, {
       ok: '그리기', detail: [
@@ -910,6 +938,7 @@ async function drawAll() {
   const status = () => { if (open()) setStatus($('artStatus'), `그림 그리는 중… ${done + failed} / ${total}`, 'busy'); };
   // by card id: cards can be moved while the scenes are written and the pictures drawn
   const ids = targets.map((i) => w0.cards[i].id);
+  if (direct) await runDirect(w0, signal).catch(() => undefined); // draws with the scenes there are if it fails
   try { await ensureScenes(targets, signal, w0); } catch { /* stopped: handled below */ }
   status();
   const one = async (id: string) => {
@@ -1815,7 +1844,9 @@ function wire() {
     toast(`그림체를 ‘${work.style.name}’(으)로 바꿨어요. 새로 그리는 그림부터 적용돼요.`);
   });
   $('stylePrompt').addEventListener('input', () => { work.style.prompt = $<HTMLTextAreaElement>('stylePrompt').value; if (work.style.preset !== 'ai') work.style.preset = 'custom'; save(); });
-  $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; save(); });
+  // typed by the writer: 연출 정리 keeps it
+  $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; work.style.charactersByWriter = true; save(); });
+  $('btnDirect').addEventListener('click', () => void runDirect().catch(() => undefined));
   $('styleWorld').addEventListener('input', () => { work.style.world = $<HTMLInputElement>('styleWorld').value; save(); });
   $('btnRefAI').addEventListener('click', () => void makeRefSheet());
   $('btnRefUpload').addEventListener('click', () => { uploadTarget = -1; const fi = $<HTMLInputElement>('fileInput'); fi.value = ''; fi.click(); });

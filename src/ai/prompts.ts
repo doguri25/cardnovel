@@ -205,6 +205,39 @@ export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cov
   ].filter(Boolean).join('\n');
 }
 
+export const DIRECT_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['characters', 'scenes'],
+  properties: {
+    characters: str,
+    scenes: SCENES_SCHEMA.properties.scenes,
+  },
+};
+
+/** 연출 정리: the whole story at once, so every card's picture shows the same people and places in a continuous way. */
+export function directPrompt(w: Work): string {
+  const num = (i: number) => String(i + 1).padStart(2, '0');
+  const cards = w.cards.map((c, i) => {
+    if (c.kind === 'outro') return null;
+    const words = stripMarks(c.kind === 'cover' ? [c.title, c.text].filter(Boolean).join(' — ') : c.text).trim();
+    return words ? `${num(i)}번 카드: ${words}` : null;
+  }).filter(Boolean).join('\n');
+  return `카드소설 「${stripMarks(w.cards[0].title) || '제목 없음'}」의 그림 연출을 정리합니다. 카드마다 그림을 한 장씩 그리는데, 그림이 카드 글과 맞고 인물이 모든 카드에서 같은 사람으로 보여야 합니다.
+인물·배경: ${worldLine(w) || '지정 없음'}
+지금 인물 설정: ${w.style.characters.trim() || '없음'}
+그림체: ${w.style.prompt.trim() || '자유'}
+
+할 일:
+- characters: 주요 인물마다 '이름: 고정 생김새' 영어 한 문장(나이·얼굴·머리 모양·체형·기본 옷차림). 인물·배경에 맞게 쓰고(한국인이면 Korean), 지금 인물 설정이 있으면 그대로 지키며 빠진 것만 채웁니다.
+- scenes: 아래 카드마다 {card: 카드 번호(정수), scene}. scene 규칙: ${SCENE_RULE}
+- 장면이 앞뒤 카드와 이어지게 씁니다: 같은 장소는 같은 모습으로, 시간대·날씨·빛이 이어지게, 옷차림은 장면이 바뀌지 않는 한 같게. 인물은 characters의 이름으로 부릅니다.
+- 01번(표지)은 이야기의 무대와 핵심 사물을 보여 주는 장면으로 씁니다.
+
+[카드]
+${cards}
+
+JSON으로 {"characters": "…", "scenes": [{"card": 번호, "scene": "…"}]}만 돌려주세요.`;
+}
+
 /** Scenes for cards whose words changed since their scene was written (or that have none), in one request. */
 export function scenesPrompt(w: Work, indices: number[]): string {
   const num = (i: number) => String(i + 1).padStart(2, '0');
