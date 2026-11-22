@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { AiError } from '../src/ai/providers';
 import { askJSON, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro } from '../src/ai/compose';
-import { DEFAULTS, newWork, type Work } from '../src/model';
+import { DEFAULTS, newWork, type Work, textSig } from '../src/model';
 
 const hooks = vi.hoisted(() => ({
   generateJSON: null as null | ((req: { tag?: string; maxTokens?: number; prompt: string }) => Promise<unknown>),
@@ -56,6 +56,7 @@ function storyWork(name = '테스트'): Work {
     c.scene = `Scene ${i + 1}`;
     c.sceneFor = c.text;
   });
+  w.style.directedFor = textSig(w); // and 연출 정리 already done for these words
   return w;
 }
 
