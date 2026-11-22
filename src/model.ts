@@ -95,6 +95,8 @@ export interface ArtStyle {
   prompt: string;
   /** English one-liners describing the main characters, so they look the same on every card */
   characters: string;
+  /** who the people are and where it happens (인물·배경), e.g. 한국인 · 현대 한국; empty means not specified */
+  world: string;
   /** character reference picture (data URL) sent with every picture request, so faces and clothes stay the same */
   refImage?: string;
 }
@@ -187,7 +189,8 @@ export const OUTRO_KINDS: Record<OutroKind, { name: string; ask: string }> = {
   none: { name: '없음', ask: '' },
 };
 
-export const STYLE_PRESETS: ArtStyle[] = [
+/** The looks to pick from; the people and setting (world) are the work's own, added by presetStyle. */
+export const STYLE_PRESETS: Omit<ArtStyle, 'world'>[] = [
   {
     preset: 'night', name: '어두운 밤 미스터리', description: '남색·먹색 밤, 창문 불빛 한두 곳, 실루엣과 안개',
     prompt: 'Moody night-time mystery illustration. Deep navy and ink-black palette, warm light only from one or two windows or lamps, cool blue highlights, silhouettes and backlight, soft fog, rain streaks and wet reflections, dark vignette.',
@@ -219,7 +222,9 @@ export const STYLE_PRESETS: ArtStyle[] = [
     characters: '',
   },
 ];
-export const presetStyle = (key: string): ArtStyle => ({ ...(STYLE_PRESETS.find((s) => s.preset === key) ?? STYLE_PRESETS[0]) });
+/** People and setting for a new work: picture AIs otherwise draw Western people for a Korean story. */
+export const DEFAULT_WORLD = '한국인 · 현대 한국';
+export const presetStyle = (key: string): ArtStyle => ({ ...(STYLE_PRESETS.find((s) => s.preset === key) ?? STYLE_PRESETS[0]), world: DEFAULT_WORLD });
 
 export const DEFAULTS = {
   series: '3분 미스터리',
@@ -324,6 +329,8 @@ export function normalizeWork(w: Omit<Partial<Work>, 'cards'> & { cards?: Partia
   for (let i = 0; i < BODY_COUNT; i++) out.cards.push(fill(body[i], 'body', i + 1));
   out.cards.push(fill(outro, 'outro', TOTAL_CARDS));
   if (!out.style || typeof out.style !== 'object') out.style = presetStyle('night');
+  // works saved before 인물·배경 existed: Korean, like a new work (a field the writer cleared stays empty)
+  if (typeof out.style.world !== 'string') out.style = { ...out.style, world: DEFAULT_WORLD };
   if (!Array.isArray(out.hashtags)) out.hashtags = [];
   if (!out.source) out.source = { mode: 'auto', text: '' };
   const review = cleanReview(w.review);

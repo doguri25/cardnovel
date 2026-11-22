@@ -70,11 +70,12 @@ describe('series', () => {
   it('carries the look and the art style (with the character picture) into the next episode', () => {
     const from = story('하나', '3분 미스터리', 1);
     from.theme = 'news'; from.ratio = '4:5'; from.font = 'Gowun Batang'; from.handle = '@me'; from.outroKind = 'teaser';
-    from.style = { preset: 'ai', name: '수채', description: 'd', prompt: 'watercolor', characters: 'Jiho', refImage: 'data:image/webp;base64,AAAA' };
+    from.style = { preset: 'ai', name: '수채', description: 'd', prompt: 'watercolor', characters: 'Jiho', world: '1990년대 서울', refImage: 'data:image/webp;base64,AAAA' };
     const next = nextEpisodeWork(from, DEFAULTS, 2);
     expect(next.id).not.toBe(from.id);
     expect(next).toMatchObject({ theme: 'news', ratio: '4:5', font: 'Gowun Batang', handle: '@me', series: '3분 미스터리', episode: 2, outroKind: 'teaser' });
     expect(next.style.refImage).toBe('data:image/webp;base64,AAAA');
+    expect(next.style.world).toBe('1990년대 서울');
     expect(next.style).not.toBe(from.style);
     expect(next.cards.every((c) => !c.text)).toBe(true);
     expect(seriesLine(next)).toBe('3분 미스터리 · 2화');
@@ -98,7 +99,7 @@ describe('series', () => {
   });
   it('stores the AI summary and keeps the series art style when asked', () => {
     const w = newWork(DEFAULTS);
-    w.style = { preset: 'ai', name: '시리즈 화풍', description: '', prompt: 'series style', characters: '' };
+    w.style = { preset: 'ai', name: '시리즈 화풍', description: '', prompt: 'series style', characters: '', world: '' };
     const a = { cards: [{ text: '본문' }], summary: '요약입니다.', style: { name: '새 화풍', description: '', prompt: 'new style', characters: '' } };
     applyCompose(w, a, undefined, true);
     expect(w.summary).toBe('요약입니다.');

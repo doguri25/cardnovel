@@ -5,7 +5,7 @@ import { DEFAULTS, newWork, type Work } from '../src/model';
 const work = (): Work => {
   const w = newWork(DEFAULTS);
   w.style = {
-    preset: 'ai', name: '밤 수채화', description: '',
+    preset: 'ai', name: '밤 수채화', description: '', world: '',
     prompt: 'Moody watercolor illustration, muted blue-grey palette, soft sodium street light, visible paper texture.',
     characters: 'Minho: a bus driver in his 40s, short black hair, navy uniform and grey cap. Seo-yeon: a woman in her 20s with long straight hair and a beige trench coat.',
   };

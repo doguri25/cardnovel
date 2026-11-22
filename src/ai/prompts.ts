@@ -1,5 +1,5 @@
 // Prompts and the JSON shape the text AI answers in.
-import { BODY_COUNT, OUTRO_KINDS, stripMarks, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, DEFAULT_WORLD, OUTRO_KINDS, stripMarks, type ArtStyle, type InputMode, type OutroKind, type Work } from '../model';
 import { SVG_EXAMPLE } from './svg-example';
 import { layoutOf } from '../render';
 
@@ -93,7 +93,7 @@ ${bible.trim()}
   return prev + bib;
 }
 
-export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; fixed?: { title: string; hook: string; body: { label: string; text: string }[] }; series?: string; episode?: number; previous?: PrevEpisode[]; bible?: string }): string {
+export function composePrompt(opts: { mode: Exclude<InputMode, 'auto'>; story: string; outroKind: OutroKind; world?: string; fixed?: { title: string; hook: string; body: { label: string; text: string }[] }; series?: string; episode?: number; previous?: PrevEpisode[]; bible?: string }): string {
   const { mode, story, outroKind, fixed } = opts;
   const outro = outroKind === 'none' ? '빈 문자열("")' : `${OUTRO_KINDS[outroKind].ask} (60자 이내)`;
   const fixedBlock = fixed
@@ -119,7 +119,7 @@ ${MODE_RULES[mode]}
 공통: 감탄사·이모지 없이, 잔혹하거나 선정적인 묘사 없이 씁니다.
 
 그 밖의 항목:
-- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 '이름: 나이·외모·옷차림' 한 문장; 인물이 없으면 빈 문자열).
+- style: 이 이야기에 어울리는 그림체 제안. name(한국어 2~10자), description(한국어 한 줄), prompt(영어 2~3문장: 화풍·색·빛·질감), characters(영어, 주요 인물마다 '이름: 나이·외모·옷차림' 한 문장; 인물·배경 "${opts.world ?? DEFAULT_WORLD}"에 맞게 쓰고, 한국인이면 Korean을 넣습니다; 인물이 없으면 빈 문자열).
 - coverScene: 표지 그림 장면(영어 한두 문장, 이야기의 무대와 핵심 사물).
 - caption: 인스타그램 게시글 본문 2~3문장(한국어, 결말을 밝히지 않음).
 - hashtags: 6~8개, #을 붙인 한국어.
@@ -197,6 +197,7 @@ export function imagePrompt(w: Work, index: number, refs: { chars?: boolean; cov
   return [
     s.prompt,
     s.characters ? `Characters (keep them identical on every card): ${s.characters}` : '',
+    worldLine(w),
     `Scene: ${scene}`,
     refLine,
     COMPOSITION[layoutOf(c)],
@@ -225,6 +226,14 @@ scene 규칙: ${SCENE_RULE}
 ${cards}
 
 JSON으로 {"scenes": [{"card": 카드 번호(정수), "scene": "영어 장면"}]}만 돌려주세요. 위 카드마다 하나씩.`;
+}
+
+/** Who the people are and where it happens, for picture AIs (they otherwise draw Western people). '' when not set. */
+export function worldLine(w: Work): string {
+  const world = (w.style.world ?? '').trim();
+  if (!world) return '';
+  if (world === DEFAULT_WORLD) return 'All people are Korean, with East Asian features; the setting is contemporary South Korea (streets, homes, objects), with no readable signage.';
+  return `People and setting: ${world}.`;
 }
 
 /* ---------- Canva AI: its image models weigh the start of a prompt most, so the scene goes first ---------- */
@@ -263,6 +272,7 @@ export function canvaPrompt(w: Work, index: number, variant?: string): string {
     sentence(scene),
     ...people.map((p) => sentence(`${p.name}: ${p.desc}`)),
     general,
+    worldLine(w),
     CANVA_FRAME[layoutOf(c)],
     variant ?? '',
     w.style.prompt.trim() ? `Style: ${w.style.prompt.trim()}` : '',
@@ -277,6 +287,7 @@ export function characterSheetPrompt(w: Work): string {
     s.prompt,
     `Character reference sheet for an illustrated Korean short story${w.cards[0]?.title ? ` titled "${w.cards[0].title}"` : ''}.`,
     s.characters ? `Characters: ${s.characters}` : 'Characters: the main characters of the story, each with a clear, distinctive look.',
+    worldLine(w),
     'Show each main character standing side by side, full body, front view, neutral pose and expression, evenly lit, on a plain light background. Same scale for everyone, generous space between them.',
     'No text, names, labels, letters, numbers, logos or watermarks.',
   ].join('\n');
@@ -302,7 +313,7 @@ export function svgPrompt(w: Work, index: number, artH: number, quick: boolean):
   const what = c.kind === 'cover' ? '표지 그림. 이야기 전체의 무대와 핵심 사물을 한 장면에.' : `${index + 1}번째 카드 그림.`;
   return `카드소설 「${title}」의 ${what}
 이 카드의 내용: ${(c.title ? c.title + ' — ' : '') + (c.text || '').slice(0, 400)}
-${c.scene ? `그릴 장면(영어): ${c.scene}\n` : ''}${prev ? `앞 카드 내용(참고): ${prev}\n` : ''}글자 없이 그림만으로 상황이 읽히게.
+${c.scene ? `그릴 장면(영어): ${c.scene}\n` : ''}${prev ? `앞 카드 내용(참고): ${prev}\n` : ''}${worldLine(w) ? `인물·배경: ${worldLine(w)}\n` : ''}글자 없이 그림만으로 상황이 읽히게.
 
 ${svgGuide(w.style)}
 - 세밀하게: 큰 면(하늘·벽·바닥) → 중간 구조물 → 작은 디테일 순서로 겹쳐 그림. 그라디언트로 재질 표현.

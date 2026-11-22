@@ -349,6 +349,7 @@ function renderStyle() {
   sel.innerHTML = `<option value="">그림체 바꾸기…</option>` + STYLE_PRESETS.map((p) => `<option value="${p.preset}">${esc(p.name)}</option>`).join('');
   $<HTMLTextAreaElement>('stylePrompt').value = s.prompt;
   $<HTMLTextAreaElement>('styleChars').value = s.characters;
+  $<HTMLInputElement>('styleWorld').value = s.world ?? '';
   renderRefBox();
 }
 
@@ -1805,8 +1806,9 @@ function wire() {
   $('stylePreset').addEventListener('change', () => {
     const v = $<HTMLSelectElement>('stylePreset').value;
     if (!v) return;
-    const keepChars = work.style.characters, keepRef = work.style.refImage;
+    const keepChars = work.style.characters, keepRef = work.style.refImage, keepWorld = work.style.world;
     work.style = presetStyle(v);
+    work.style.world = keepWorld; // the people and the place stay when only the look changes
     if (keepChars && !work.style.characters) work.style.characters = keepChars;
     if (keepRef) work.style.refImage = keepRef;
     save(); renderStyle();
@@ -1814,6 +1816,7 @@ function wire() {
   });
   $('stylePrompt').addEventListener('input', () => { work.style.prompt = $<HTMLTextAreaElement>('stylePrompt').value; if (work.style.preset !== 'ai') work.style.preset = 'custom'; save(); });
   $('styleChars').addEventListener('input', () => { work.style.characters = $<HTMLTextAreaElement>('styleChars').value; save(); });
+  $('styleWorld').addEventListener('input', () => { work.style.world = $<HTMLInputElement>('styleWorld').value; save(); });
   $('btnRefAI').addEventListener('click', () => void makeRefSheet());
   $('btnRefUpload').addEventListener('click', () => { uploadTarget = -1; const fi = $<HTMLInputElement>('fileInput'); fi.value = ''; fi.click(); });
   $('btnRefCover').addEventListener('click', () => { if (work.cards[0].img) { work.style.refImage = work.cards[0].img; save(); renderRefBox(); toast('표지 그림을 인물 기준 그림으로 썼어요.'); } });

@@ -1,5 +1,5 @@
 // Story → 20 cards, card rewrites, outro line and pictures, on top of the provider adapter.
-import { BODY_COUNT, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
+import { BODY_COUNT, DEFAULT_WORLD, type ArtStyle, type Card, type InputMode, type OutroKind, type Work } from '../model';
 import { detectMode, splitManuscript, type SplitResult } from '../parse';
 import { canvaAiImage } from '../canva';
 import { diffWords } from '../diff';
@@ -71,7 +71,8 @@ export function applyCompose(w: Work, a: ComposeAnswer, fixed?: SplitResult, kee
   w.summary = s(a.summary) || w.summary;
   w.hashtags = (Array.isArray(a.hashtags) ? a.hashtags : []).map((t) => s(t)).filter(Boolean).map((t) => (t.startsWith('#') ? t : '#' + t)).slice(0, 10);
   if (a.style && s(a.style.prompt) && !keepStyle) {
-    w.style = { preset: 'ai', name: s(a.style.name) || 'AI 제안', description: s(a.style.description), prompt: s(a.style.prompt), characters: s(a.style.characters) };
+    // the writer's people and setting stay: only the look comes from the AI
+    w.style = { preset: 'ai', name: s(a.style.name) || 'AI 제안', description: s(a.style.description), prompt: s(a.style.prompt), characters: s(a.style.characters), world: w.style.world ?? DEFAULT_WORLD };
   }
 }
 
@@ -95,12 +96,12 @@ export async function compose(w: Work, story: string, mode: InputMode, outroKind
       applyCompose(w, {}, sp);
       return { mode: m, split: sp, usedAI: false };
     }
-    const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, fixed: sp, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
+    const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, fixed: sp, world: w.style.world, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
     applyCompose(w, a, sp, keepStyle);
     return { mode: m, split: sp, usedAI: true };
   }
   if (!ai) throw new AiError('no_key');
-  const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
+  const a = await askJSON<ComposeAnswer>(ai, composePrompt({ mode: m, story, outroKind, world: w.style.world, ...cont }), COMPOSE_SCHEMA, signal, 16000, 'compose');
   if (!Array.isArray(a.cards) || a.cards.filter((c) => s(c?.text)).length < 3) throw new AiError('invalid_json');
   applyCompose(w, a, undefined, keepStyle);
   return { mode: m, usedAI: true };
