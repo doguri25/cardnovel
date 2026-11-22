@@ -6,12 +6,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { AiError } from '../src/ai/providers';
-import { askJSON, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro } from '../src/ai/compose';
+import { askJSON, CARD_VARIANTS, COVER_VARIANTS, refreshScenes, rewriteCard, sceneStale, summarize, writeOutro } from '../src/ai/compose';
 import { DEFAULTS, newWork, type Work, textSig } from '../src/model';
 
 const hooks = vi.hoisted(() => ({
   generateJSON: null as null | ((req: { tag?: string; maxTokens?: number; prompt: string }) => Promise<unknown>),
-  drawCard: null as null | ((w: { id: string; cards: { id: string; text: string; scene: string }[] }, i: number) => Promise<{ img?: string; svg?: string }>),
+  drawCard: null as null | ((w: { id: string; cards: { id: string; text: string; scene: string }[] }, i: number, variant?: string) => Promise<{ img?: string; svg?: string }>),
   confirm: null as null | (() => Promise<boolean>),
 }));
 
@@ -25,7 +25,7 @@ vi.mock('../src/ai/providers', async (orig) => {
 });
 vi.mock('../src/ai/compose', async (orig) => {
   const m = await orig<typeof import('../src/ai/compose')>();
-  return { ...m, drawCard: (...a: Parameters<typeof m.drawCard>) => (hooks.drawCard ? hooks.drawCard(a[0], a[1]) : m.drawCard(...a)) };
+  return { ...m, drawCard: (...a: Parameters<typeof m.drawCard>) => (hooks.drawCard ? hooks.drawCard(a[0], a[1], a[5]) : m.drawCard(...a)) };
 });
 vi.mock('../src/ui/dom', async (orig) => {
   const m = await orig<typeof import('../src/ui/dom')>();
@@ -337,6 +337,51 @@ describe('모든 그림 그리기 while the writer opens another work', () => {
       expect(new Set(calls).size).toBe(calls.length);
       expect(calls.length).toBe(19);
     } finally { hooks.drawCard = null; hooks.confirm = null; }
+  });
+});
+
+describe('그림 후보 on any card', () => {
+  const pickable = () => document.querySelectorAll('#modal [data-pick]:not([disabled])').length;
+  it('a body card gets two compositions of its own scene, and the one picked goes on that card only', async () => {
+    await openFromLibrary(storyWork('C'));
+    const asked: { i: number; variant?: string }[] = [];
+    hooks.drawCard = async (_w, i, variant) => {
+      asked.push({ i, variant });
+      return { svg: `<svg xmlns="http://www.w3.org/2000/svg" data-v="${CARD_VARIANTS.indexOf(variant!)}"/>` };
+    };
+    try {
+      const btn = row(4).querySelector<HTMLButtonElement>('[data-act="cands"]')!;
+      expect(btn.textContent).toBe('후보 2장');
+      btn.click();
+      await until(() => pickable() === 2);
+      expect(CARD_VARIANTS).toHaveLength(2);
+      expect(asked.map((a) => a.i)).toEqual([4, 4]);
+      expect(asked.map((a) => a.variant).sort()).toEqual([...CARD_VARIANTS].sort());
+      expect(el('modal').textContent).toContain('05번 카드 후보');
+      document.querySelector<HTMLButtonElement>('#modal [data-pick="1"]')!.click();
+      await until(() => el('modal').hidden);
+      expect(cur().cards[4].svg).toContain('data-v="1"');
+      expect(cur().cards[4].imgSource).toBe('claude');
+      expect(cur().cards.filter((c) => c.svg)).toHaveLength(1);
+    } finally { hooks.drawCard = null; }
+  });
+
+  it('the cover keeps its three compositions; the last card has no candidates', async () => {
+    await openFromLibrary(storyWork('D'));
+    const asked: (string | undefined)[] = [];
+    hooks.drawCard = async (_w, i, variant) => { asked.push(variant); expect(i).toBe(0); return { svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' }; };
+    try {
+      expect(row(19).querySelector('[data-act="cands"]')).toBeNull();
+      const btn = row(0).querySelector<HTMLButtonElement>('[data-act="cands"]')!;
+      expect(btn.textContent).toBe('후보 3장');
+      btn.click();
+      await until(() => pickable() === 3);
+      expect(asked.sort()).toEqual([...COVER_VARIANTS].sort());
+      expect(el('modal').textContent).toContain('표지 후보');
+      document.querySelector<HTMLButtonElement>('#modal [data-a="close"]')!.click();
+      await until(() => el('modal').hidden);
+      expect(cur().cards[0].svg).toBeUndefined();
+    } finally { hooks.drawCard = null; }
   });
 });
 

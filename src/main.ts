@@ -20,7 +20,7 @@ import type { App } from './app';
 import { renderReview, wireReview } from './ui/review';
 import { renderProof, wireProof } from './ui/proof';
 import { openInstaPreview } from './ui/insta';
-import { openCoverCandidates } from './ui/cover';
+import { openCandidates, variantsFor } from './ui/cover';
 import { openBible } from './ui/bible';
 import { pullFinished, renderFinishBox, wireFinishBox, type FinishDeps } from './ui/finish';
 import { openVersions, type VersionDeps } from './ui/versions';
@@ -438,7 +438,7 @@ function cardRowHTML(card: Card, i: number): string {
       <div class="pic ${src ? '' : 'empty'} ${busy ? 'busy' : ''}">${src ? `<img alt="" src="${src}">` : isOutro ? '그림 없어도 됨' : '그림 없음'}${src && card.imgSource ? `<span class="src">${esc(IMG_NAME[card.imgSource])}</span>` : ''}</div>
       <div class="picbtns">
         ${canAI ? `<button class="btn tiny tonal" type="button" data-act="ai" ${busy || !online() ? 'disabled' : ''}>${src ? '다시' : 'AI 그림'}</button>` : ''}
-        ${canAI && isCover ? `<button class="btn tiny" type="button" data-act="coverCands" ${busy || !online() ? 'disabled' : ''}>후보 3장</button>` : ''}
+        ${canAI && !isOutro ? `<button class="btn tiny" type="button" data-act="cands" ${busy || !online() ? 'disabled' : ''}>후보 ${variantsFor(i).length}장</button>` : ''}
         ${p === 'canva' ? `<button class="btn tiny tonal" type="button" data-act="canva" ${busy || !online() ? 'disabled' : ''}>${src ? 'Canva에서 고치기' : 'Canva에서 그리기'}</button>` : ''}
         ${p === 'canva' && card.canvaDesignId ? `<button class="btn tiny" type="button" data-act="canvaImport" ${busy || !online() ? 'disabled' : ''}>Canva에서 가져오기</button>` : ''}
         <button class="btn tiny" type="button" data-act="upload">올리기</button>
@@ -663,10 +663,14 @@ async function onCardAction(act: string, i: number) {
     if (card.canvaDesignId) await importFromCanva(i, card.canvaDesignId);
   } else if (act === 'ai') {
     await drawOne(i);
-  } else if (act === 'coverCands') {
+  } else if (act === 'cands') {
     const p = work.imageAI.provider as 'gemini' | 'openai' | 'claude' | 'canvaai';
-    await ensureScenes([0]);
-    await openCoverCandidates(app, () => cardRefs(0), IMG_NAME[p], p === 'canvaai' ? null : settings.prices[p] ?? 0, () => { refreshRow(0); });
+    const w0 = work, id = card.id;
+    await ensureScenes([i]);
+    // the card may have moved, or another work opened, while its scene was written
+    const at = work === w0 ? work.cards.findIndex((c) => c.id === id) : -1;
+    if (at < 0) return;
+    await openCandidates(app, at, () => cardRefs(at), IMG_NAME[p], p === 'canvaai' ? null : settings.prices[p] ?? 0, () => refreshCardRow(w0, id));
   } else if (act === 'rewrite') {
     await rewrite(i);
   }

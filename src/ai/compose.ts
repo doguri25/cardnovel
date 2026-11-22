@@ -202,9 +202,14 @@ export const COVER_VARIANTS = [
   'Composition idea: a wide establishing shot of the place where the story happens, a small figure for scale.',
   'Composition idea: the main character from behind or in silhouette at the moment of tension.',
 ];
+/** Composition ideas for a body card's two candidates: the people up close, then the whole place. */
+export const CARD_VARIANTS = [
+  'Composition idea: closer in, a medium shot of the people in the scene so their faces and expressions show.',
+  'Composition idea: pulled back, a wide shot of the whole place and its mood, the people small in the frame.',
+];
 
 export async function drawCard(w: Work, index: number, ai: ImageAI, refs: CardRefs | null, signal?: AbortSignal, variant?: string): Promise<{ img?: string; svg?: string }> {
-  const tag = variant ? 'cover' : undefined;
+  const tag = variant && index === 0 ? 'cover' : undefined; // a body card's candidates count as ordinary pictures
   if (ai.provider === 'canvaai') {
     // Canva's image API takes no reference pictures: the art style and the people's looks in every prompt keep the look
     const out = await canvaAiImage({ prompt: canvaPrompt(w, index, variant), aspect: artAspect(w, index) }, signal);
